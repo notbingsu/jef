@@ -18,7 +18,7 @@ def needs_approval(action, confirm):
 
 
 class Agent:
-    def __init__(self, url, goals, *, rules=(), confirm=(), approve=None):
+    def __init__(self, url, goals, *, rules=(), confirm=(), approve=None, background=False):
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
             raise ValueError("Supply a task")
@@ -27,7 +27,7 @@ class Agent:
         self.confirm = tuple(confirm)
         self.approve = approve
         self.pending_text = None
-        self.browser = Browser(url)
+        self.browser = Browser(url, background=background)
         try:
             page = self.browser.observe()
         except Exception:

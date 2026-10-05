@@ -42,7 +42,8 @@ If use case × skill confidence is under 50%, jev asks before running; without a
 | `--list` | Show the skill tree. |
 | `--route-only` | Show which skill Jev picks, then stop. Useful while writing descriptions. |
 | `--skill calendar/update-event` | Skip routing and run that leaf with the rest of the words as details. |
-| `--close` | Close a browser skill's tab afterwards. |
+| `--close` / `--no-close` | Close the tab afterwards, or keep it. Default: closed after a background run, kept after a visible one. |
+| `--background` / `--no-background` | Override the skill's `background` setting, e.g. to watch a LinkedIn run happen. |
 
 A browser skill opens a tab in the foreground, so you watch the real page. The terminal prints each action as it executes:
 
@@ -55,6 +56,22 @@ linkedin-dms/reply → https://www.linkedin.com/messaging/
 ```
 
 The tab stays open afterwards (`--close` to close it). `DONE` is the model's claim, so check the tab.
+
+A `background` skill (LinkedIn) opens its tab in the background instead: same Chrome, same profile, same logins, but nothing jumps in front of what you were doing, and the tab closes when the run ends. There is no tab to read, so a skill with `report = true` (like `linkedin-dms/check`) prints what the finished page showed:
+
+```text
+route: linkedin-dms/check  (100%, 310 ms)
+linkedin-dms/check → https://www.linkedin.com/messaging/  (background tab)
+   395 ms  WAIT  94%  (no change)
+  3540 ms  DONE: the model reports success. The trace has the page it saw.
+           trace: artifacts/runs/linkedin-dms/check/20261005T094838Z.json
+  Katharine Tan                Sep 29     Katharine: Thanks for sending me your resume. Speak soon!
+  Joy Z                        Sep 22     You: Hi Joy, my pleasure to connect! Glad to be noticed by Airwallex 😆
+```
+
+The report is code-checked: the text model only selects and copies, and a name, date or preview that isn't on the page word for word is left out (the CLI says how many). It covers the visible part of the page (about 6,000 characters), newest conversations first, and needs `TEXT_MODEL_API_KEY`.
+
+A background run still needs Chrome running; if it isn't, Browser Harness starts it and you get a window. `--no-background` watches a run, and `--no-close` keeps the tab so you can look at the page yourself.
 
 An API skill prints what it will do and waits for you before any create, update or delete:
 
@@ -85,7 +102,8 @@ skills/
       _branch.toml         url, browser-only rules, confirm
       create-event.toml    browser fallback
   linkedin-dms/
-    _branch.toml
+    _branch.toml           background = true, rules, confirm
+    check.toml             read-only; report = true
     reply.toml
 ```
 
@@ -98,6 +116,8 @@ skills/
 | `rules` | any | Your standing instructions. Sent to every browser decision, the text helper, and API argument filling. |
 | `confirm` | any | Browser only. Clicking or selecting an element whose label contains one of these phrases as whole words pauses for `y/N`. Without a terminal, the run stops instead. API skills always confirm changes. |
 | `options` | any | A table of settings for API operations. |
+| `background` | any | Browser only. Open the tab in the background of your Chrome rather than switching to it, and close it afterwards. The deepest layer that sets it wins; `--background`/`--no-background` override it. |
+| `report` | any | Browser only. After `DONE`, the text model reads the finished page and the CLI prints what it shows. |
 
 To add a use case, make a directory with a `_branch.toml` and add leaves. Nest directories for finer branches (`calendar/recurring/weekly-sync.toml`). Unknown keys are rejected, so typos fail loudly.
 
@@ -134,7 +154,7 @@ from jev_ultrafast import Agent, skills
 skill = skills.load("calendar/browser/create-event")
 # approve(action, decision) -> bool answers confirm prompts; without it, a confirm action stops the run.
 with Agent(skill.url, skill.task + "\nLunch with Sam, Tue 12:30, 45 min",
-           rules=skill.rules, confirm=skill.confirm) as agent:
+           rules=skill.rules, confirm=skill.confirm, background=skill.background) as agent:
     for state in agent.run():
         print(state["elapsed_ms"], state["status"])
 ```

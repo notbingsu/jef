@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import gcal, router, skills
 from .agent import Agent
+from .model import page_report
 
 # api = "service.operation" in a leaf skill resolves here.
 APIS = {"gcal": gcal.OPERATIONS}
@@ -77,11 +78,41 @@ def pick(request):
     return skills.load(path), route
 
 
-def run_browser(skill, details, close=False, route=None):
+def make_report(goal, skill, state):
+    """What the finished page shows, for the trace and the CLI. A failure is recorded, never raised: it must not
+    hide the run."""
+    try:
+        entries, missing, dropped, info = page_report(goal, state["page"], skill.rules)
+    except (ValueError, RuntimeError) as error:
+        return {"error": str(error)}
+    return {"entries": entries, "missing": missing, "dropped": dropped, "model_call": info}
+
+
+def print_report(report):
+    if "error" in report:
+        print(f"  no report: {report['error']}")
+        return
+    for entry in report["entries"]:
+        print(f"  {entry['name']:<28} {entry['when'] or '':<10} {entry['text'] or ''}")
+    left_out = len(report["dropped"])
+    if not report["entries"]:
+        why = report["missing"] or "the page showed none of what you asked for."
+        if left_out:
+            why = f"{left_out} entries could not be copied exactly from the page; the trace has them."
+        print(f"  Nothing to report: {why}")
+    elif left_out:
+        print(f"  ({left_out} entries had values left out: not found word for word on the page)")
+    print("  (what the page showed when the run finished; the trace has the full text)")
+
+
+def run_browser(skill, details, close=None, route=None, background=None):
     goal = f"{skill.task}\n{details}" if details else skill.task
-    print(f"{skill.path} → {skill.url}", flush=True)
-    agent = Agent(skill.url, goal, rules=skill.rules, confirm=skill.confirm, approve=approve)
-    shown = 0
+    background = skill.background if background is None else background
+    # A tab you never saw is clutter, so a background run cleans up after itself unless you ask it not to.
+    close = background if close is None else close
+    print(f"{skill.path} → {skill.url}{'  (background tab)' if background else ''}", flush=True)
+    agent = Agent(skill.url, goal, rules=skill.rules, confirm=skill.confirm, approve=approve, background=background)
+    shown, report = 0, None
     try:
         for state in agent.run():
             for step in state["history"][shown:]:
@@ -89,15 +120,20 @@ def run_browser(skill, details, close=False, route=None):
             shown = len(state["history"])
     finally:
         state = agent.snapshot()
-        trace = save_trace(skill, {"route": route, **state})
+        if skill.report and state["status"] == "done":
+            report = make_report(goal, skill, state)
+        trace = save_trace(skill, {"route": route, **state, "report": report})
         if close:
             agent.close()
     outcome = {
-        "done": "DONE: the model reports success. Check the tab to confirm.",
+        "done": "DONE: the model reports success."
+        + (" The trace has the page it saw." if close else " Check the tab to confirm."),
         "blocked": "BLOCKED: no supported action could make progress.",
         "declined": "STOPPED: a confirm action was not approved.",
     }[state["status"]]
     print(f"{state['elapsed_ms']:>6} ms  {outcome}\n{'':>9}  trace: {trace}")
+    if report:
+        print_report(report)
     return 0 if state["status"] == "done" else 1
 
 
@@ -120,7 +156,16 @@ def main(argv=None):
     parser.add_argument("--skill", help="skip routing and run this leaf, e.g. calendar/update-event")
     parser.add_argument("--list", action="store_true", help="show the skill tree")
     parser.add_argument("--route-only", action="store_true", help="show which skill Jev picks, then stop")
-    parser.add_argument("--close", action="store_true", help="close a browser skill's tab afterwards")
+    parser.add_argument(
+        "--close",
+        action=argparse.BooleanOptionalAction,
+        help="close a browser skill's tab afterwards; default: on for a background run, off for a visible one",
+    )
+    parser.add_argument(
+        "--background",
+        action=argparse.BooleanOptionalAction,
+        help="open the tab in the background instead of switching to it; default: the skill's own setting",
+    )
     args = parser.parse_args(argv)
     request = " ".join(args.request).strip()
     load_environment()
@@ -140,7 +185,7 @@ def main(argv=None):
             return 0
         if skill.api:
             return run_api(skill, request, route)
-        return run_browser(skill, request, args.close, route)
+        return run_browser(skill, request, args.close, route, args.background)
     except (ValueError, RuntimeError) as error:
         raise SystemExit(f"jev: {error}") from None
     except KeyboardInterrupt:

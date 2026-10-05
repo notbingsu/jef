@@ -84,3 +84,17 @@ def test_repository_skills_load():
             assert name in APIS[service], skill.api
         else:
             assert skill.url.startswith("https://")
+
+
+def test_background_and_report_are_inherited_flags_the_deepest_layer_sets(tree):
+    assert not skills.load("mail/drafts/reply", tree).background
+    write(tree, "mail/_branch.toml", 'url = "https://mail.test/"\nbackground = true\n')
+    write(tree, "mail/read.toml", 'task = "Read."\nreport = true\n')
+    write(tree, "mail/drafts/_branch.toml", "background = false\n")
+    read = skills.load("mail/read", tree)
+    assert read.background and read.report
+    reply = skills.load("mail/drafts/reply", tree)
+    assert not reply.background and not reply.report
+    write(tree, "mail/bad.toml", 'task = "x"\nbackground = "yes"\n')
+    with pytest.raises(ValueError, match="background must be true or false"):
+        skills.load("mail/bad", tree)

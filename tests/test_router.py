@@ -90,7 +90,9 @@ def runs(monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "load_environment", lambda: None)
     monkeypatch.setattr(cli, "run_api", lambda skill, details, route=None: calls.append((skill.path, details)) or 0)
-    monkeypatch.setattr(cli, "run_browser", lambda skill, details, close=False, route=None: calls.append(skill.path))
+    monkeypatch.setattr(
+        cli, "run_browser", lambda skill, details, close=None, route=None, background=None: calls.append(skill.path)
+    )
     return calls
 
 

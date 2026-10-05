@@ -18,15 +18,22 @@ class StalePage(ValueError):
 
 
 class Browser:
-    def __init__(self, url):
+    def __init__(self, url, background=False):
+        self.target = None
         ensure_daemon()
-        # Open in the foreground: the real tab is how you watch a run.
-        self.target = cdp("Target.createTarget", url="about:blank", background=False)["targetId"]
-        self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
-        self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
-        # Keep rAF/menus rendering if you switch to another tab mid-run.
-        self.call("Emulation.setFocusEmulationEnabled", enabled=True)
-        self.call("Page.navigate", url=url)
+        try:
+            # A foreground tab is how you watch a run; a background one stays out of your way in the same Chrome,
+            # with the same profile and logins. Either way the tab is never activated again after this.
+            self.target = cdp("Target.createTarget", url="about:blank", background=background)["targetId"]
+            self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
+            self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
+            # Focus emulation keeps rAF, timers and menus running in a tab you are not looking at.
+            self.call("Emulation.setFocusEmulationEnabled", enabled=True)
+            self.call("Page.navigate", url=url)
+        except BaseException:
+            # A half-built background tab would be invisible, so never leave one behind.
+            self.close()
+            raise
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             if self.evaluate("document.readyState") == "complete":

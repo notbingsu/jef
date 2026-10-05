@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from .model import complete_json, typesafe, validate_choice, validate_noul
+from .model import complete_json, conform, nullable, strict, typesafe, validate_choice, validate_noul
 from .questions import CALENDAR, CATEGORY, COLOR, EVENT, INVITE, RECOLOR, UNINVITE, UNINVITE_CRITERIA
 
 API = "https://www.googleapis.com/calendar/v3"
@@ -28,14 +28,6 @@ COLORS = {str(n) for n in range(1, 12)}
 NONE = "NONE"
 # A TypeSafe answer below this probability is not acted on: a pick stops the run, other judgments are left out.
 SURE = 0.5
-
-
-def nullable(kind, **extra):
-    return {"anyOf": [{"type": kind, **extra}, {"type": "null"}]}
-
-
-def strict(**properties):
-    return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
 
 
 FIELDS = dict(
@@ -50,20 +42,6 @@ SEARCH = strict(
     query=nullable("string"), time_min=nullable("string"), time_max=nullable("string"), missing=nullable("string")
 )
 CHANGE = strict(changes=strict(**FIELDS), missing=nullable("string"))
-
-
-def conform(value, spec):
-    """Check model output against the schemas above. Omitted keys count as null; unknown keys are rejected."""
-    kinds = spec.get("anyOf", [spec])
-    if value is None:
-        return any(kind["type"] == "null" for kind in kinds)
-    for kind in kinds:
-        if kind["type"] == "string" and isinstance(value, str):
-            return True
-        if kind["type"] == "object" and isinstance(value, dict):
-            properties = kind["properties"]
-            return not set(value) - set(properties) and all(conform(value.get(k), s) for k, s in properties.items())
-    return False
 
 
 def credentials():

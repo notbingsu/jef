@@ -1,0 +1,4 @@
+description = "Read recent conversations, no replying"
+task = """Open LinkedIn messaging and read the conversations the details ask about, newest first. Do not type or send
+anything. Choose DONE once the conversation list is visible: the CLI prints what the page shows."""
+report = true

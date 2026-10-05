@@ -7,7 +7,8 @@ skills/
     create-event.toml     task (required), description, and its own url/rules/confirm/options
 
 A leaf inherits from every _branch.toml on its path: the deepest url wins, rules and confirm accumulate,
-and options merge key by key (deeper wins). A leaf with `api` runs that operation instead of a browser.
+and options merge key by key (deeper wins). `background` and `report` are flags; the deepest layer to set one wins.
+A leaf with `api` runs that operation instead of a browser.
 """
 
 import os
@@ -19,7 +20,7 @@ from pathlib import Path
 BRANCH = "_branch.toml"
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
 API = re.compile(r"[a-z_]+\.[a-z_]+")
-BRANCH_KEYS = {"description", "url", "rules", "confirm", "options"}
+BRANCH_KEYS = {"description", "url", "rules", "confirm", "options", "background", "report"}
 LEAF_KEYS = BRANCH_KEYS | {"task", "api"}
 
 
@@ -33,6 +34,8 @@ class Skill:
     confirm: tuple[str, ...] = ()
     api: str | None = None
     options: dict = field(default_factory=dict)
+    background: bool = False
+    report: bool = False
 
 
 def default_root():
@@ -51,6 +54,9 @@ def read(file, keys):
             raise ValueError(f"{file}: {key} must be a string")
     if "api" in data and not API.fullmatch(data["api"]):
         raise ValueError(f"{file}: api must look like service.operation")
+    for key in ("background", "report"):
+        if not isinstance(data.get(key, False), bool):
+            raise ValueError(f"{file}: {key} must be true or false")
     if not isinstance(data.get("options", {}), dict):
         raise ValueError(f"{file}: options must be a table")
     for key in ("rules", "confirm"):
@@ -71,9 +77,10 @@ def load(path, root=None):
     branches = [root.joinpath(*parts[:depth], BRANCH) for depth in range(len(parts))]
     layers = [read(f, BRANCH_KEYS) for f in branches if f.is_file()]
     data = read(leaf, LEAF_KEYS)
-    url, rules, confirm, options = None, [], [], {}
+    url, rules, confirm, options, flags = None, [], [], {}, {"background": False, "report": False}
     for layer in [*layers, data]:
         url = layer.get("url", url)
+        flags.update({k: layer[k] for k in flags if k in layer})
         rules += layer.get("rules", [])
         confirm += layer.get("confirm", [])
         options.update(layer.get("options", {}))
@@ -91,6 +98,7 @@ def load(path, root=None):
         confirm=tuple(dict.fromkeys(c.strip() for c in confirm)),
         api=data.get("api"),
         options=options,
+        **flags,
     )
 
 

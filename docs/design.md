@@ -40,14 +40,20 @@ One browser-side DOM snapshot supplies common HTML/ARIA roles, names, values, vi
 
 The model sees visible text, never screenshots. The agent's tab opens in the foreground; focus emulation keeps animation frames running if another tab is brought forward.
 
+A `background` run uses the same Chrome and profile, so the same logins, but `Target.createTarget` is given `background: true` and nothing activates the target afterwards: the tab is created without being switched to. Focus emulation, already enabled for every run, is what makes this work — an unfocused tab would otherwise throttle animation frames and timers. CDP input is dispatched to the target's renderer rather than through the window system, so clicking and typing do not need the tab to be in front. A background run closes its tab when it ends, since an unseen tab is clutter; `--no-close` keeps it. If the site shows a sign-in page the skill's rules tell the model to choose BLOCKED. Nothing else about observation, freshness or execution changes. True headless is not available for these skills: Chrome cannot open a second instance on a profile the running Chrome already holds, and a fresh profile has none of your logins.
+
 Freshness compares semantic state instead of counting DOM mutations. Before a click/select, guards compare the document, full URL, viewport, safe form values/states, selected target, and nearby form/dialog/row context. Text generation, typing, scrolling, waiting, and completion use a full semantic comparison. The executor rechecks target visibility, enabled state, geometry, and click occlusion. Scoped guards intentionally permit unrelated visible content to change; this is a practical heuristic, not proof that arbitrary page changes are irrelevant to the goal.
 
 Browser mutations are not retried by transport recovery. Completed execution is logged before the next observation, including when that observation encounters a navigation. An interrupted native-select evaluation stops because its change event may already have fired. Typing uses a browser select-all command followed by CDP text insertion, so existing input contents are replaced.
 
 The next observation waits for up to two animation frames or 50 ms after an interaction. Editable ARIA comboboxes instead wait for visible options, capped at 200 ms. An explicit WAIT is 100 ms.
 
+## Reports
+
+A skill with `report = true` ends with a read of the finished page, since a headless run has no tab to look at. After a DONE choice, the page's observed text goes to the text model with the goal and skill rules, and it returns entries of `name`, `when` and `text` under a strict schema. Code checks each value against the page text, ignoring whitespace: a value not found word for word is blanked, and an entry whose name is not found is dropped. The model selects and copies; it cannot add. The trace keeps the entries, what was left out, and the page text. A failed report is recorded in the trace and never changes the run's status. The report covers only the visible text the snapshot captured (6,000 characters), and like DONE it is a claim about that page, not proof about the account.
+
 ## Boundaries
 
-Sixty browser actions and 120 decision requests bound a run. Up to 250 action candidates are retained; truncated candidates cannot be selected. Credentials remain server-side. Tabs share the existing Chrome profile.
+Sixty browser actions and 120 decision requests bound a run. Up to 250 action candidates are retained; truncated candidates cannot be selected. Credentials remain server-side. Tabs share the existing Chrome profile, in the foreground or the background.
 
 Name resolution covers common labels, ARIA references, and text; it is not the browser's full accessibility algorithm. Shadow roots, frames, canvas, uploads, nested scrolling, pop-ups, and complex keyboard interactions can block progress. A valid action can still be wrong; the model's DONE choice is not proof the task succeeded.

@@ -1,7 +1,11 @@
 description = "LinkedIn messaging"
 url = "https://www.linkedin.com/messaging/"
+# Runs in a background tab of your own Chrome, so your login is there and nothing jumps in front of you.
+background = true
 rules = [
-  "Only open or message conversations with people named in the details.",
   "Never send connection requests, InMail, or attachments.",
+  "The messaging page reports ready before the conversation list has rendered. If the page shows no conversations yet and no clear sign the list is truly empty, WAIT rather than BLOCKED.",
+  "If the page asks to sign in or verify identity, choose BLOCKED. Never enter credentials.",
+  "A conversation with the word Sponsored in its lines is an ad, not a message from a person: never report it.",
 ]
 confirm = ["Send"]

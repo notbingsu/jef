@@ -9,7 +9,7 @@ import time
 import anthropic
 import httpx
 
-from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
+from .questions import NEXT_ACTION, REPORT, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
 # Structured output: Claude can only return {"text": string | null}. Values are still validated below.
@@ -19,6 +19,31 @@ TEXT_SCHEMA = {
     "required": ["text"],
     "additionalProperties": False,
 }
+
+
+def nullable(kind, **extra):
+    return {"anyOf": [{"type": kind, **extra}, {"type": "null"}]}
+
+
+def strict(**properties):
+    return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
+
+
+def conform(value, spec):
+    """Check text-model output against a schema built with nullable/strict. Omitted keys count as null; unknown
+    keys are rejected."""
+    kinds = spec.get("anyOf", [spec])
+    if value is None:
+        return any(kind["type"] == "null" for kind in kinds)
+    for kind in kinds:
+        if kind["type"] == "string" and isinstance(value, str):
+            return True
+        if kind["type"] == "array" and isinstance(value, list):
+            return all(conform(item, kind["items"]) for item in value)
+        if kind["type"] == "object" and isinstance(value, dict):
+            properties = kind["properties"]
+            return not set(value) - set(properties) and all(conform(value.get(k), s) for k, s in properties.items())
+    return False
 
 
 def post_json(url, key, body):
@@ -262,3 +287,35 @@ def field_text(context):
     if set(output or {}) != {"text"} or not isinstance(value, str) or not value.strip() or len(value) > 2000:
         raise ValueError("Text helper returned no valid field value; nothing typed.")
     return value, info
+
+
+ENTRY = strict(name=nullable("string"), when=nullable("string"), text=nullable("string"))
+REPORT_SCHEMA = strict(entries={"type": "array", "items": ENTRY}, missing=nullable("string"))
+
+
+def squash(text):
+    return " ".join(text.split())
+
+
+def page_report(goal, page, rules=()):
+    """What the finished page shows, as the details asked. The text model only selects and copies: code keeps an
+    value only when it appears verbatim in the page text: a wrong `when` or `text` is blanked, a wrong `name` drops
+    the entry. Returns (entries, missing, what was left out, info)."""
+    context = {
+        "goal": goal,
+        **({"skill_rules": list(rules)} if rules else {}),
+        "page": {k: page[k] for k in ("url", "title", "text")},
+    }
+    output, info = complete_json(REPORT, context, REPORT_SCHEMA, "Reporting a page")
+    if output is None or not conform(output, REPORT_SCHEMA) or not isinstance(output.get("entries"), list):
+        raise ValueError("The text model's report did not match the schema; nothing is shown.")
+    seen = squash(page["text"])
+    entries, dropped = [], []
+    for entry in output["entries"]:
+        values = {k: squash(entry[k]) if entry.get(k) else None for k in ("name", "when", "text")}
+        wrong = [k for k, v in values.items() if (v and v not in seen) or (k == "name" and not v)]
+        if wrong:
+            dropped.append({"entry": entry, "fields": wrong})
+        if values["name"] and "name" not in wrong:
+            entries.append({k: None if k in wrong else v for k, v in values.items()})
+    return entries, output.get("missing"), dropped, info
