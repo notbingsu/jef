@@ -1,0 +1,3 @@
+description = "Show events matching a question"
+api = "gcal.find_events"
+task = "Find the calendar events the details ask about."

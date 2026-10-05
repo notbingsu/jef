@@ -36,6 +36,13 @@ def post_json(url, key, body):
     raise RuntimeError("Model unavailable")
 
 
+def typesafe(body):
+    key = os.environ.get("TYPESAFE_API_KEY")
+    if not key:
+        raise ValueError("Jev needs TYPESAFE_API_KEY; nothing was chosen.")
+    return post_json("https://api.typesafe.ai/v1/systemone", key, body)
+
+
 def validate_choice(answer, ids):
     try:
         probabilities = answer["probabilities"]
@@ -52,6 +59,14 @@ def validate_choice(answer, ids):
     if not valid:
         raise ValueError("Invalid TypeSafe response; no action executed.")
     return answer
+
+
+def validate_noul(answer):
+    """The probability of yes."""
+    value = answer.get("noul") if isinstance(answer, dict) else None
+    if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
+        raise ValueError("Invalid TypeSafe response; no action executed.")
+    return value
 
 
 def action_space(actions):
@@ -127,7 +142,7 @@ def choose(state, goal, history, rules=()):
         "questions": questions,
     }
     started = time.perf_counter()
-    result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
+    result = typesafe(body)
     operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
     operation = operation_answer["choice"]
     target = None
@@ -171,29 +186,30 @@ def field_context(goal, action, page, history, rules=()):
 
 @functools.lru_cache(maxsize=1)
 def claude_client(key):
-    # One client per key keeps the connection warm between TYPE_TEXT calls.
+    # One client per key keeps the connection warm between text-model calls.
     return anthropic.Anthropic(api_key=key, timeout=25, max_retries=2)
 
 
-def claude_content(key, model, context):
+def claude_content(key, model, system, schema, context):
     try:
         response = claude_client(key).messages.create(
             model=model,
             max_tokens=1024,
-            system=TEXT_VALUE,
+            system=system,
             messages=[{"role": "user", "content": json.dumps(context)}],
-            output_config={"format": {"type": "json_schema", "schema": TEXT_SCHEMA}},
+            output_config={"format": {"type": "json_schema", "schema": schema}},
         )
     except anthropic.APIStatusError as error:
         raise RuntimeError(f"Model provider returned HTTP {error.status_code}; no action executed.") from None
     except anthropic.APIError:
         raise RuntimeError("Model connection failed; no action executed.") from None
-    # A refusal or truncated response is not a field value.
+    # A refusal or truncated response is not a usable answer.
     text = next((b.text for b in response.content if b.type == "text"), None)
     return (text if response.stop_reason == "end_turn" else None), response.usage.to_dict()
 
 
-def chat_content(key, model, context):
+def chat_content(key, model, system, _schema, context):
+    # json_object mode does not enforce the schema; callers validate every field.
     base = os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
     reasoning = {"thinking": {"type": "disabled"}} if "api.deepseek.com/" in base else {"reasoning": {"effort": "low"}}
     if os.environ.get("TEXT_MODEL_REASONING") == "none":
@@ -207,7 +223,7 @@ def chat_content(key, model, context):
             "response_format": {"type": "json_object"},
             **reasoning,
             "messages": [
-                {"role": "system", "content": TEXT_VALUE},
+                {"role": "system", "content": system},
                 {
                     "role": "user",
                     "content": json.dumps(context),
@@ -221,23 +237,28 @@ def chat_content(key, model, context):
         return None, result.get("usage", {})
 
 
-def field_text(context):
+def complete_json(system, context, schema, purpose):
+    """One text-model call that should return a JSON object. Returns (object or None, call info)."""
     key = os.environ.get("TEXT_MODEL_API_KEY")
     if not key:
-        raise ValueError("TYPE_TEXT needs TEXT_MODEL_API_KEY; no text is hardcoded or guessed by the executor.")
+        raise ValueError(f"{purpose} needs TEXT_MODEL_API_KEY; nothing is hardcoded or guessed.")
     model = os.environ.get("TEXT_MODEL", "deepseek-chat")
     started = time.perf_counter()
     # claude-* models use the Anthropic Messages API; anything else uses an OpenAI-compatible endpoint.
-    content, usage = (claude_content if model.startswith("claude-") else chat_content)(key, model, context)
+    content, usage = (claude_content if model.startswith("claude-") else chat_content)(
+        key, model, system, schema, context
+    )
     try:
         output = json.loads(content)
-        value = output["text"]
-        if set(output) != {"text"} or not isinstance(value, str) or not value.strip() or len(value) > 2000:
-            raise ValueError()
-    except (ValueError, KeyError, TypeError):
-        raise ValueError("Text helper returned no valid field value; nothing typed.") from None
-    return value, {
-        "model": model,
-        "latency_ms": round((time.perf_counter() - started) * 1000),
-        "usage": usage,
-    }
+    except (TypeError, ValueError):
+        output = None
+    info = {"model": model, "latency_ms": round((time.perf_counter() - started) * 1000), "usage": usage}
+    return (output if isinstance(output, dict) else None), info
+
+
+def field_text(context):
+    output, info = complete_json(TEXT_VALUE, context, TEXT_SCHEMA, "TYPE_TEXT")
+    value = (output or {}).get("text")
+    if set(output or {}) != {"text"} or not isinstance(value, str) or not value.strip() or len(value) > 2000:
+        raise ValueError("Text helper returned no valid field value; nothing typed.")
+    return value, info

@@ -1,0 +1,3 @@
+description = "Add one event"
+task = """Create one calendar event using the title, date, start time and duration in the details below.
+Stop when the saved event is visible on the calendar."""

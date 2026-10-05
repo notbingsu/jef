@@ -1,8 +1,32 @@
 description = "Google Calendar"
-url = "https://calendar.google.com/calendar/r/week"
+# Preferences ported from tele_gcal's preferences.json. They reach the API operations and the browser skills.
 rules = [
-  "Work only in the calendar's own create and edit dialogs; never change calendar settings.",
-  "Use the calendar's displayed time zone unless the details say otherwise.",
+  "Take the event title from the details; if none is given, suggest a short one from the context.",
+  "Leave location, description and guests empty unless the details give them.",
+  "Only add guests whose email addresses appear in the details; never guess an email from a name.",
+  "For a multi-day event given only as dates, make it one all-day event across those dates.",
 ]
-# The run pauses for a y/N in the terminal before clicking anything with these labels.
-confirm = ["Save", "Send", "Delete"]
+
+[options]
+calendar_id = "primary"     # `jev list my calendars` shows the IDs
+# timezone = "Asia/Singapore"  # default: the calendar's own time zone
+default_duration_minutes = 60
+max_results = 10
+
+# Google's colorId (1-11) per category; create/update pick one when it clearly fits.
+[options.colors]
+class = "1"
+entertainment = "3"
+going_out = "3"
+physical = "6"
+meetings = "7"
+critical = "11"
+
+# Searching for one of these categories lists the time range and matches any of its keywords
+# in an event's title, description or location.
+[options.keywords]
+flights = ["flight", "airline", "boarding", "gate", "terminal", "SQ", "UA", "AA", "DL"]
+"career fairs" = ["career fair", "career expo", "job fair", "recruitment"]
+interviews = ["interview", "screening", "onsite", "loop"]
+meetings = ["meeting", "sync", "standup", "1:1"]
+travel = ["trip", "travel", "hotel", "check-in", "checkout", "flight"]

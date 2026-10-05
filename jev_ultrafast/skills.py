@@ -4,21 +4,23 @@ skills/
   _branch.toml            optional, applies to everything
   calendar/
     _branch.toml          url, rules and confirm shared by calendar leaves
-    create-event.toml     task (required), description, and its own url/rules/confirm
+    create-event.toml     task (required), description, and its own url/rules/confirm/options
 
-A leaf inherits from every _branch.toml on its path: the deepest url wins, rules and confirm accumulate.
+A leaf inherits from every _branch.toml on its path: the deepest url wins, rules and confirm accumulate,
+and options merge key by key (deeper wins). A leaf with `api` runs that operation instead of a browser.
 """
 
 import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 BRANCH = "_branch.toml"
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
-BRANCH_KEYS = {"description", "url", "rules", "confirm"}
-LEAF_KEYS = BRANCH_KEYS | {"task"}
+API = re.compile(r"[a-z_]+\.[a-z_]+")
+BRANCH_KEYS = {"description", "url", "rules", "confirm", "options"}
+LEAF_KEYS = BRANCH_KEYS | {"task", "api"}
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,8 @@ class Skill:
     description: str = ""
     rules: tuple[str, ...] = ()
     confirm: tuple[str, ...] = ()
+    api: str | None = None
+    options: dict = field(default_factory=dict)
 
 
 def default_root():
@@ -42,9 +46,13 @@ def read(file, keys):
         raise ValueError(f"{file}: {error}") from None
     if unknown := set(data) - keys:
         raise ValueError(f"{file}: unknown keys {sorted(unknown)}; allowed {sorted(keys)}")
-    for key in ("description", "url", "task"):
+    for key in ("description", "url", "task", "api"):
         if not isinstance(data.get(key, ""), str):
             raise ValueError(f"{file}: {key} must be a string")
+    if "api" in data and not API.fullmatch(data["api"]):
+        raise ValueError(f"{file}: api must look like service.operation")
+    if not isinstance(data.get("options", {}), dict):
+        raise ValueError(f"{file}: options must be a table")
     for key in ("rules", "confirm"):
         values = data.get(key, [])
         if not isinstance(values, list) or not all(isinstance(v, str) and v.strip() for v in values):
@@ -59,26 +67,30 @@ def load(path, root=None):
         raise ValueError(f"Invalid skill path {path!r}; use lowercase names like calendar/create-event")
     leaf = root.joinpath(*parts).with_suffix(".toml")
     if not leaf.is_file():
-        raise ValueError(f"No skill at {path!r} under {root}. Run `jev list`.")
+        raise ValueError(f"No skill at {path!r} under {root}. `jev --list` shows the tree.")
     branches = [root.joinpath(*parts[:depth], BRANCH) for depth in range(len(parts))]
     layers = [read(f, BRANCH_KEYS) for f in branches if f.is_file()]
     data = read(leaf, LEAF_KEYS)
-    url, rules, confirm = None, [], []
+    url, rules, confirm, options = None, [], [], {}
     for layer in [*layers, data]:
         url = layer.get("url", url)
         rules += layer.get("rules", [])
         confirm += layer.get("confirm", [])
+        options.update(layer.get("options", {}))
     if not data.get("task", "").strip():
         raise ValueError(f"{leaf}: a leaf skill needs a task")
-    if not url or not url.startswith(("https://", "http://")):
+    # API leaves never open a browser, so only browser leaves need a start page.
+    if "api" not in data and (not url or not url.startswith(("https://", "http://"))):
         raise ValueError(f"{leaf}: no http(s) url on this skill or its branches")
     return Skill(
         path="/".join(parts),
         task=data["task"].strip(),
-        url=url,
+        url=url or "",
         description=data.get("description", ""),
         rules=tuple(r.strip() for r in rules),
         confirm=tuple(dict.fromkeys(c.strip() for c in confirm)),
+        api=data.get("api"),
+        options=options,
     )
 
 

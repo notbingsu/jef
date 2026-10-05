@@ -8,3 +8,5 @@ artifacts/
 *.egg-info/
 
 dist/
+config/client_secrets.json
+config/token.json

@@ -1,0 +1,3 @@
+description = "Move or edit one event"
+api = "gcal.update_event"
+task = "Change one existing calendar event as the details describe."

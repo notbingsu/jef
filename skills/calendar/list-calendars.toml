@@ -1,0 +1,3 @@
+description = "List calendars and their IDs"
+api = "gcal.list_calendars"
+task = "List my calendars."

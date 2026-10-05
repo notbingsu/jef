@@ -60,9 +60,27 @@ def test_invalid_skills_are_rejected(tree, path, content, message):
         skills.load(path, tree)
 
 
+def test_api_leaf_needs_no_url_and_options_merge_by_key(tree):
+    write(tree, "mail/_branch.toml", 'url = "https://mail.test/"\n[options]\nlimit = 5\nfolder = "inbox"\n')
+    write(tree, "mail/count.toml", 'task = "Count mail."\napi = "mail.count"\n[options]\nlimit = 20\n')
+    write(tree, "other/count.toml", 'task = "Count."\napi = "mail.count"\n')
+    assert skills.load("mail/count", tree).options == {"limit": 20, "folder": "inbox"}
+    assert skills.load("other/count", tree).api == "mail.count"
+    write(tree, "other/bad.toml", 'task = "x"\napi = "not a name"\n')
+    with pytest.raises(ValueError, match="service.operation"):
+        skills.load("other/bad", tree)
+
+
 def test_repository_skills_load():
+    from jev_ultrafast.cli import APIS
+
     root = Path(__file__).parent.parent / "skills"
     leaves = [path for _, path, _, leaf in skills.outline(root) if leaf]
     assert leaves
     for path in leaves:
-        assert skills.load(path, root).url.startswith("https://")
+        skill = skills.load(path, root)
+        if skill.api:
+            service, _, name = skill.api.partition(".")
+            assert name in APIS[service], skill.api
+        else:
+            assert skill.url.startswith("https://")

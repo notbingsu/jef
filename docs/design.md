@@ -8,9 +8,31 @@ Operation and target questions receive the same next-step rules and the skill's 
 
 TYPE_TEXT sends the goal, skill rules, selected field, visible page context, and recent actions to a small LLM. Its JSON must contain exactly one valid `text` value. The code does not extract quoted literals. A value can be reused after a stale decision only while the entire helper input is identical, and is discarded after a successful mutation.
 
+## Routing
+
+A run starts from a plain-language request. One TypeSafe request asks a `use_case` question over the top-level branches plus `NONE`, and, for each branch with more than one leaf, a skill question over that branch's leaves (deeper branches flattened, with their descriptions attached as `within`). Skill questions run without seeing the use-case answer, so each names the use case it assumes. Only the chosen branch's skill head is validated and consumed; a branch with one leaf needs no head. The product of the two probabilities is the route's confidence: under 0.5 the user confirms first, and without a terminal nothing runs. The full request becomes the skill's details.
+
 ## Skills
 
 A skill resolves to a start URL, a task, rules, and confirm phrases by walking `skills/` from the root to the leaf. Rules are model input. Confirm phrases are not: the executor matches them, as whole words and case-insensitively, against the observed label of a chosen click/select target. A match calls the approver before any input. A refusal, or no approver, ends the run with status `declined`. Approval does not bypass freshness: the executor still rechecks the page afterwards, and a stale page means a new decision and, if it is gated, a new prompt.
+
+## API skills
+
+A leaf with `api = "service.operation"` skips the browser. The operation sends the task, details, skill rules, `now`, and its own instructions to the text model with a strict JSON schema (every field present, nullable). The Anthropic path enforces the schema; the OpenAI-compatible path does not, so code re-checks types and rejects unknown keys either way. A non-null `missing` stops the run with the model's question.
+
+For Google Calendar, the text model writes only what has no candidate list: titles, descriptions, locations, search terms, and ISO times resolved from `now`. TypeSafe answers everything that picks from candidates code already holds, asked in the same round trip as the text model whenever their inputs are independent:
+
+| Step | TypeSafe question | Candidates (from code) |
+| --- | --- | --- |
+| search (find, update, delete) | `category` Choice | `options.keywords` categories + `NONE` |
+| pick (update, delete) | `event` Choice | the search results, each with a code-computed relative day + `NONE` |
+| create, update | `color` Choice | `options.colors` categories + `NONE` |
+| create, update | `invite_*` Noul per address | addresses a regex finds in the details |
+| update | `remove_*` Noul per guest | guests already on the picked event |
+
+Update is three stages: search terms ∥ category, then the pick, then changes for the picked event ∥ color and guests. The text model sees only the picked event, never the other results. A pick under 0.5 probability, or `NONE`, stops the run; other judgments under 0.5 are not applied. Code maps the choice to the event ID, the category to its `colorId`, and builds the guest list. Every field is validated before the confirmation prompt: times must parse and be ordered, and colors must be Google's 1–11. Mutations are sent once, never retried.
+
+Dates and times stay with the text model. Jev reads dates as text and is unreliable at date arithmetic, so a TypeSafe version would ask for each date's parts (month, day, weekday, week offset, hour, minute, duration) and assemble them in code. That removes no text-model call while titles still need one.
 
 ## Runtime
 
