@@ -1,0 +1,7 @@
+description = "LinkedIn messaging"
+url = "https://www.linkedin.com/messaging/"
+rules = [
+  "Only open or message conversations with people named in the details.",
+  "Never send connection requests, InMail, or attachments.",
+]
+confirm = ["Send"]

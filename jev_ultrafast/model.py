@@ -87,8 +87,10 @@ def action_space(actions):
     return elements, targets, controls
 
 
-def choose(state, goal, history):
+def choose(state, goal, history, rules=()):
     elements, targets, controls = action_space(state["actions"])
+    # Skill rules are the user's standing instructions for this site, shared by every head.
+    base = {"goal": goal, **({"skill_rules": list(rules)} if rules else {})}
     labels = {
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
         "TYPE_TEXT": "Enter or replace text in an editable field. A small LLM will supply the value from the goal.",
@@ -98,7 +100,7 @@ def choose(state, goal, history):
     operations.update({key: value["label"] for key, value in controls.items()})
     operations.update(DONE="Every requirement is visibly satisfied.", BLOCKED="No supported operation can progress.")
     questions = {
-        "operation": {"type": "choice", "criteria": operations, "instructions": {"goal": goal, "rules": NEXT_ACTION}}
+        "operation": {"type": "choice", "criteria": operations, "instructions": {**base, "rules": NEXT_ACTION}}
     }
     for operation, candidates in targets.items():
         questions[operation.lower() + "_target"] = {
@@ -111,7 +113,7 @@ def choose(state, goal, history):
                 }
                 for index, a in candidates.items()
             },
-            "instructions": {"goal": goal, "operation": operation, "rules": [NEXT_ACTION, TARGET]},
+            "instructions": {**base, "operation": operation, "rules": [NEXT_ACTION, TARGET]},
         }
     body = {
         "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"),
@@ -157,9 +159,10 @@ def choose(state, goal, history):
     }
 
 
-def field_context(goal, action, page, history):
+def field_context(goal, action, page, history, rules=()):
     return {
         "goal": goal,
+        **({"skill_rules": list(rules)} if rules else {}),
         "field": {k: action.get(k) for k in ("label", "role", "value")},
         "page": {"title": page["title"], "text": page["text"][:6000]},
         "recent_actions": [{k: h.get(k) for k in ("action", "text")} for h in history[-6:]],

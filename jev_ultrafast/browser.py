@@ -20,10 +20,11 @@ class StalePage(ValueError):
 class Browser:
     def __init__(self, url):
         ensure_daemon()
-        self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+        # Open in the foreground: the real tab is how you watch a run.
+        self.target = cdp("Target.createTarget", url="about:blank", background=False)["targetId"]
         self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
         self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
-        # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
+        # Keep rAF/menus rendering if you switch to another tab mid-run.
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
         self.call("Page.navigate", url=url)
         deadline = time.monotonic() + 15
@@ -41,7 +42,7 @@ class Browser:
             raise StalePage("Document changed during evaluation")
         return response.get("result", {}).get("value")
 
-    def observe(self, screenshot=True):
+    def observe(self):
         if getattr(self, "after_input", None):
             action, self.after_input = self.after_input, None
             # This is read-only and happens after execution was logged, even if navigation interrupts it.
@@ -76,9 +77,7 @@ class Browser:
                 pass
         for attempt in range(10):
             try:
-                return browser_operation(
-                    {"operation": "observe", "session": self.session, "screenshot": screenshot}
-                )
+                return browser_operation({"operation": "observe", "session": self.session})
             except StalePage:
                 if attempt == 9:
                     raise
@@ -189,6 +188,4 @@ def browser_operation(request):
     if info is None:
         raise StalePage("Document is navigating")
     info["fingerprint"] = fingerprint(info)
-    if request.get("screenshot", True):
-        info["screenshot"] = call("Page.captureScreenshot", format="jpeg", quality=72)["data"]
     return info

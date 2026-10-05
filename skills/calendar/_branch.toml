@@ -1,0 +1,8 @@
+description = "Google Calendar"
+url = "https://calendar.google.com/calendar/r/week"
+rules = [
+  "Work only in the calendar's own create and edit dialogs; never change calendar settings.",
+  "Use the calendar's displayed time zone unless the details say otherwise.",
+]
+# The run pauses for a y/N in the terminal before clicking anything with these labels.
+confirm = ["Save", "Send", "Delete"]

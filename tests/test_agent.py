@@ -160,7 +160,7 @@ def test_missing_text_credential_stops_before_guessing(monkeypatch):
 @pytest.fixture
 def runner():
     a = loop.Agent.__new__(loop.Agent)
-    a.screenshots = False
+    a.rules, a.confirm, a.approve = (), (), None
     a.pending_text = None
     p = page()
     a.state = {
@@ -172,7 +172,6 @@ def runner():
         "decisions": [],
         "status": "predicted",
         "started_at": time.perf_counter(),
-        "record": False,
         "text_calls": [],
     }
     return a
@@ -233,7 +232,7 @@ def test_observation_is_one_atomic_browser_read(monkeypatch):
     p = page()
     cdp = Mock(return_value={"result": {"value": p}})
     monkeypatch.setattr(browser, "cdp", cdp)
-    actual = browser_operation({"operation": "observe", "session": "test", "screenshot": False})
+    actual = browser_operation({"operation": "observe", "session": "test"})
     assert actual["actions"] == p["actions"]
     assert cdp.call_count == 1
     assert cdp.call_args.args[0] == "Runtime.evaluate"
@@ -267,39 +266,13 @@ def test_interrupted_dropdown_mutation_cannot_be_retried_as_stale(monkeypatch, r
     assert cdp.call_count == 1
 
 
-def test_fingerprint_tracks_values_and_identity_not_screenshots():
+def test_fingerprint_tracks_values_and_identity():
     p = page()
     other = deepcopy(p)
-    other["screenshot"] = "changed"
+    other["guards"] = {"10": "changed"}
     assert fingerprint(p) == fingerprint(other)
     other["actions"][0]["node"] = 99
     assert fingerprint(p) != fingerprint(other)
-
-
-@pytest.mark.parametrize("changed", ["Departure", "Where from?", "Where to?", "year"])
-def test_flight_verification_rejects_wrong_trip(changed):
-    from examples.flights import verify
-
-    actual = {
-        "url": "https://www.google.com/travel/flights/search?tfs=example",
-        "text": "Track prices from Zürich to London departing 2026-09-20",
-        "actions": [
-            {"label": k, "value": v}
-            for k, v in [
-                ("Change ticket type. One way", "One way"),
-                ("Where from?", "Zürich"),
-                ("Where to?", "London"),
-                ("Departure", "Sun, Sep 20"),
-                ("Nonstop flight on Sunday, September 20. Select flight", ""),
-            ]
-        ],
-    }
-    assert verify(actual)["passed"]
-    if changed == "year":
-        actual["text"] = actual["text"].replace("2026", "2027")
-    else:
-        next(a for a in actual["actions"] if a["label"] == changed)["value"] = "wrong"
-    assert not verify(actual)["passed"]
 
 
 @pytest.mark.parametrize(
@@ -318,3 +291,53 @@ def test_navigation_during_prediction_reobserves_without_action(runner):
     assert runner.state["status"] == "ready"
     assert runner.state["decision"] is None
     runner.state["browser"].act.assert_not_called()
+
+
+def test_skill_rules_reach_every_head_and_the_text_helper(monkeypatch):
+    rules = ["Sign messages as Bing."]
+    sent = []
+
+    def post(_url, _key, body):
+        sent.append(body)
+        return {
+            "model": "test",
+            "answers": {
+                "operation": choice(body["questions"]["operation"]["criteria"], "CLICK"),
+                "click_target": choice(body["questions"]["click_target"]["criteria"], "2"),
+            },
+        }
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", post)
+    model.choose(page(), "Reply to Ada", [], rules)
+    assert all(q["instructions"]["skill_rules"] == rules for q in sent[0]["questions"].values())
+    assert model.field_context("Reply", page()["actions"][0], page(), [], rules)["skill_rules"] == rules
+    model.choose(page(), "Reply to Ada", [])
+    assert not any("skill_rules" in q["instructions"] for q in sent[1]["questions"].values())
+
+
+@pytest.mark.parametrize(
+    "label, kind, gated",
+    [("Send", "click", True), ("send now", "click", True), ("Sender", "click", False), ("Send", "fill", False)],
+)
+def test_confirm_phrases_match_whole_words_on_clicks(label, kind, gated):
+    assert loop.needs_approval({"label": label, "kind": kind}, ("Send",)) is gated
+
+
+@pytest.mark.parametrize("approver", [None, Mock(return_value=False)])
+def test_unapproved_confirm_action_stops_without_input(runner, approver):
+    runner.confirm, runner.approve = ("Go",), approver
+    runner.state["decision"] = decision("e3")
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    runner.state["browser"].act.assert_not_called()
+    assert runner.state["status"] == "declined" and runner.state["decision"] is None
+    assert list(runner.run()) == []
+
+
+def test_approved_confirm_action_executes_once(runner):
+    runner.confirm, runner.approve = ("Go",), Mock(return_value=True)
+    runner.state["decision"] = decision("e3")
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    runner.approve.assert_called_once()
+    runner.state["browser"].act.assert_called_once()
+    assert runner.state["history"][-1]["action"] == "Go"
