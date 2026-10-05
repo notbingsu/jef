@@ -1,15 +1,24 @@
 """TypeSafe makes choices; an optional small OpenAI-compatible model writes field values."""
 
+import functools
 import json
 import math
 import os
 import time
 
+import anthropic
 import httpx
 
 from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
+# Structured output: Claude can only return {"text": string | null}. Values are still validated below.
+TEXT_SCHEMA = {
+    "type": "object",
+    "properties": {"text": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+    "required": ["text"],
+    "additionalProperties": False,
+}
 
 
 def post_json(url, key, body):
@@ -157,16 +166,35 @@ def field_context(goal, action, page, history):
     }
 
 
-def field_text(context):
-    key = os.environ.get("TEXT_MODEL_API_KEY")
-    if not key:
-        raise ValueError("TYPE_TEXT needs TEXT_MODEL_API_KEY; no text is hardcoded or guessed by the executor.")
+@functools.lru_cache(maxsize=1)
+def claude_client(key):
+    # One client per key keeps the connection warm between TYPE_TEXT calls.
+    return anthropic.Anthropic(api_key=key, timeout=25, max_retries=2)
+
+
+def claude_content(key, model, context):
+    try:
+        response = claude_client(key).messages.create(
+            model=model,
+            max_tokens=1024,
+            system=TEXT_VALUE,
+            messages=[{"role": "user", "content": json.dumps(context)}],
+            output_config={"format": {"type": "json_schema", "schema": TEXT_SCHEMA}},
+        )
+    except anthropic.APIStatusError as error:
+        raise RuntimeError(f"Model provider returned HTTP {error.status_code}; no action executed.") from None
+    except anthropic.APIError:
+        raise RuntimeError("Model connection failed; no action executed.") from None
+    # A refusal or truncated response is not a field value.
+    text = next((b.text for b in response.content if b.type == "text"), None)
+    return (text if response.stop_reason == "end_turn" else None), response.usage.to_dict()
+
+
+def chat_content(key, model, context):
     base = os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
-    model = os.environ.get("TEXT_MODEL", "deepseek-chat")
     reasoning = {"thinking": {"type": "disabled"}} if "api.deepseek.com/" in base else {"reasoning": {"effort": "low"}}
     if os.environ.get("TEXT_MODEL_REASONING") == "none":
         reasoning = {"reasoning": {"enabled": False}}
-    started = time.perf_counter()
     result = post_json(
         base + "/chat/completions",
         key,
@@ -185,7 +213,21 @@ def field_text(context):
         },
     )
     try:
-        output = json.loads(result["choices"][0]["message"]["content"])
+        return result["choices"][0]["message"]["content"], result.get("usage", {})
+    except (KeyError, IndexError, TypeError):
+        return None, result.get("usage", {})
+
+
+def field_text(context):
+    key = os.environ.get("TEXT_MODEL_API_KEY")
+    if not key:
+        raise ValueError("TYPE_TEXT needs TEXT_MODEL_API_KEY; no text is hardcoded or guessed by the executor.")
+    model = os.environ.get("TEXT_MODEL", "deepseek-chat")
+    started = time.perf_counter()
+    # claude-* models use the Anthropic Messages API; anything else uses an OpenAI-compatible endpoint.
+    content, usage = (claude_content if model.startswith("claude-") else chat_content)(key, model, context)
+    try:
+        output = json.loads(content)
         value = output["text"]
         if set(output) != {"text"} or not isinstance(value, str) or not value.strip() or len(value) > 2000:
             raise ValueError()
@@ -194,5 +236,5 @@ def field_text(context):
     return value, {
         "model": model,
         "latency_ms": round((time.perf_counter() - started) * 1000),
-        "usage": result.get("usage", {}),
+        "usage": usage,
     }
