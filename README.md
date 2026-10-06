@@ -15,9 +15,28 @@ cp .env.example .env              # add TYPESAFE_API_KEY and TEXT_MODEL_API_KEY
 uv run browser-harness --doctor   # connect Chrome; allow remote debugging when prompted
 ```
 
-Browser runs use your existing Chrome profile, so sites you're logged into stay logged in. `TEXT_MODEL` can be any OpenAI-compatible model (set `TEXT_MODEL_BASE_URL`) or a `claude-*` model (uses the Anthropic API with `TEXT_MODEL_API_KEY` as the Anthropic key).
+Browser runs use your existing Chrome profile, so sites you're logged into stay logged in.
 
-For the Calendar API skills, create an OAuth client of type **Desktop app** in Google Cloud (Calendar API enabled) and save its JSON as `config/client_secrets.json`. The first calendar run opens a consent page and saves `config/token.json`. tele_gcal's `client_secrets.json` and `token.json` work as-is (same scope). Both files are git-ignored; the paths are configurable in `.env`.
+### Settings
+
+Secrets and settings live apart, because they are handled differently:
+
+| File | Holds | In git |
+| --- | --- | --- |
+| `.env` | API keys only: `TYPESAFE_API_KEY`, `TEXT_MODEL_API_KEY` | no |
+| `jev.toml` | everything else, typed and validated | yes |
+
+`jev.toml` is optional; a missing key takes its default. Like skills, unknown keys and bad values are rejected, so a typo fails loudly instead of being ignored. A setting still in `.env` (`TEXT_MODEL=…`) is an error that says where it moved.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `trace` | `full` | How much of each run `artifacts/runs/` keeps: `full`, `low` or `off`. See [Traces](#traces). `--trace` overrides it for one run. |
+| `typesafe_model` | `jev-latest` | TypeSafe model. Pin a version such as `jev-1.13.0` to keep answers stable when the alias moves. |
+| `text_model` | `deepseek-chat` | Text model for TYPE_TEXT, calendar arguments and reports. A `claude-*` model uses the Anthropic API, with `TEXT_MODEL_API_KEY` as the Anthropic key; anything else uses an OpenAI-compatible endpoint. |
+| `text_model_base_url` | `https://api.deepseek.com/v1` | That endpoint. Not used for `claude-*`. |
+| `text_model_reasoning` | `low` | `none` turns reasoning off on that endpoint. Not used for `claude-*`. |
+
+For the Calendar API skills, create an OAuth client of type **Desktop app** in Google Cloud (Calendar API enabled) and save its JSON as `config/client_secrets.json`. The first calendar run opens a consent page and saves `config/token.json`. tele_gcal's `client_secrets.json` and `token.json` work as-is (same scope). Both files are git-ignored. The consent page redirects to `http://localhost:8765/`; a Web application client (tele_gcal's is one) must have that redirect URI registered, while a Desktop app client accepts it as is.
 
 ## Ask jev
 
@@ -44,6 +63,7 @@ If use case × skill confidence is under 50%, jev asks before running; without a
 | `--skill calendar/update-event` | Skip routing and run that leaf with the rest of the words as details. |
 | `--close` / `--no-close` | Close the tab afterwards, or keep it. Default: closed after a background run, kept after a visible one. |
 | `--background` / `--no-background` | Override the skill's `background` setting, e.g. to watch a LinkedIn run happen. |
+| `--trace full\|low\|off` | Record this run at another level than `jev.toml`'s `trace`, e.g. `--trace full` to debug one run. |
 
 A browser skill opens a tab in the foreground, so you watch the real page. The terminal prints each action as it executes:
 
@@ -83,7 +103,17 @@ calendar/update-event → gcal.update_event
   Update “Dentist”? [y/N]
 ```
 
-Every run writes a JSON trace to `artifacts/runs/<skill>/`.
+### Traces
+
+Each run can write a JSON trace to `artifacts/runs/<skill>/` (git-ignored), at the level `trace` sets:
+
+| Level | Keeps | Size |
+| --- | --- | --- |
+| `full` | Everything: the page text and element table, every model request and raw answer. What you need to see why a run went wrong. | ~250 KB for a LinkedIn check |
+| `low` | What ran and what came of it: route, status, each action and decision (operation, target, confidence, latency, tokens), calendar arguments and changes, any report. No page text, element tables, request bodies or raw answers. | a few KB |
+| `off` | Nothing; the terminal output is the only record. | none |
+
+A full trace holds whatever the page showed, such as your messages. `low` keeps a run's answer (a report, a calendar change) without the rest of the page. When a run misbehaves, repeat it with `--trace full`.
 
 ## The skill tree
 

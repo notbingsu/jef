@@ -1,0 +1,18 @@
+# jev's settings. Nothing here is secret: API keys go in .env, which is git-ignored.
+# Missing keys take the default shown. Unknown keys are rejected, so a typo fails loudly.
+
+# How much of each run to keep in artifacts/runs/:
+#   "full"  everything, including the page text and every model request (default; best for debugging)
+#   "low"   what ran, what was chosen, timings, token use and any report; no page content or request bodies
+#   "off"   nothing
+# One run can differ: jev --trace full ...
+trace = "low"
+
+# TypeSafe model. Pin a version (e.g. "jev-1.13.0") to keep answers stable when the alias moves.
+# typesafe_model = "jev-latest"
+
+# Text model for TYPE_TEXT, calendar arguments and reports. A claude-* model uses the Anthropic API.
+text_model = "claude-haiku-4-5"
+# Only for a model that isn't claude-*: its OpenAI-compatible endpoint, and "none" to turn reasoning off.
+# text_model_base_url = "https://api.deepseek.com/v1"
+# text_model_reasoning = "low"

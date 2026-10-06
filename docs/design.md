@@ -50,7 +50,13 @@ The next observation waits for up to two animation frames or 50 ms after an inte
 
 ## Reports
 
-A skill with `report = true` ends with a read of the finished page, since a headless run has no tab to look at. After a DONE choice, the page's observed text goes to the text model with the goal and skill rules, and it returns entries of `name`, `when` and `text` under a strict schema. Code checks each value against the page text, ignoring whitespace: a value not found word for word is blanked, and an entry whose name is not found is dropped. The model selects and copies; it cannot add. The trace keeps the entries, what was left out, and the page text. A failed report is recorded in the trace and never changes the run's status. The report covers only the visible text the snapshot captured (6,000 characters), and like DONE it is a claim about that page, not proof about the account.
+A skill with `report = true` ends with a read of the finished page, since a background run has no tab to look at. After a DONE choice, the page's observed text goes to the text model with the goal and skill rules, and it returns entries of `name`, `when` and `text` under a strict schema. Code checks each value against the page text, ignoring whitespace: a value not found word for word is blanked, and an entry whose name is not found is dropped. The model selects and copies; it cannot add. The trace keeps the entries and what was left out; a full trace also keeps the page text. A failed report is recorded in the trace and never changes the run's status. The report covers only the visible text the snapshot captured (6,000 characters), and like DONE it is a claim about that page, not proof about the account.
+
+## Settings and traces
+
+`.env` holds only secrets (API keys); every other setting is in `jev.toml`, read by `config.py`. The split follows how each is handled: secrets stay out of git and out of traces, settings are worth keeping in git and reviewing. Settings are validated the way skills are: unknown keys and values outside a key's choices are rejected, and a setting left in the environment under its old variable name is an error rather than silently ignored. Tests replace `jev.toml` with the defaults (`tests/conftest.py`), so a developer's `text_model` can never route an offline test to a paid API.
+
+`trace` sets what a run records. `full` is the whole state machine: every observation, decision request and raw answer. `low` keeps the run's outcome and its steps (each decision's operation, target, confidence, latency and token use, calendar arguments and changes, and any report) and drops page text, element tables, request bodies and raw answers, which are both most of the bytes and all of the page content. `off` writes nothing. A trace is written after execution, so its level never changes what runs.
 
 ## Boundaries
 

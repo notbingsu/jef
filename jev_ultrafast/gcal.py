@@ -5,7 +5,6 @@ only free text and times into a typed schema. Code resolves event IDs from its o
 field, and asks before any create, update or delete. Mutations are never retried.
 """
 
-import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
@@ -16,11 +15,16 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
+from . import config
 from .model import complete_json, conform, nullable, strict, typesafe, validate_choice, validate_noul
 from .questions import CALENDAR, CATEGORY, COLOR, EVENT, INVITE, RECOLOR, UNINVITE, UNINVITE_CRITERIA
 
 API = "https://www.googleapis.com/calendar/v3"
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
+SECRETS = Path("config/client_secrets.json")
+TOKEN = Path("config/token.json")
+# A web OAuth client only redirects to the URIs registered for it; tele_gcal's client registers this port.
+OAUTH_PORT = 8765
 CLIENT = httpx.Client(timeout=25)
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -51,12 +55,10 @@ def credentials():
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    secrets = Path(os.environ.get("GOOGLE_CLIENT_SECRETS_JSON", "config/client_secrets.json"))
-    token = Path(os.environ.get("GOOGLE_TOKEN_JSON", "config/token.json"))
     creds = None
-    if token.exists():
+    if TOKEN.exists():
         try:
-            creds = Credentials.from_authorized_user_file(str(token), SCOPES)
+            creds = Credentials.from_authorized_user_file(str(TOKEN), SCOPES)
         except ValueError:
             creds = None
     if creds and creds.valid:
@@ -67,13 +69,13 @@ def credentials():
         except RefreshError:
             creds = None
     if not creds or not creds.valid:
-        if not secrets.exists():
-            raise ValueError(f"Calendar API skills need a Google OAuth client file at {secrets}; see README.")
-        flow = InstalledAppFlow.from_client_secrets_file(str(secrets), SCOPES)
-        creds = flow.run_local_server(port=int(os.environ.get("GOOGLE_OAUTH_LOCAL_SERVER_PORT", "8765")))
-    token.parent.mkdir(parents=True, exist_ok=True)
-    token.write_text(creds.to_json())
-    token.chmod(0o600)
+        if not SECRETS.exists():
+            raise ValueError(f"Calendar API skills need a Google OAuth client file at {SECRETS}; see README.")
+        flow = InstalledAppFlow.from_client_secrets_file(str(SECRETS), SCOPES)
+        creds = flow.run_local_server(port=OAUTH_PORT)
+    TOKEN.parent.mkdir(parents=True, exist_ok=True)
+    TOKEN.write_text(creds.to_json())
+    TOKEN.chmod(0o600)
     return creds
 
 
@@ -299,7 +301,7 @@ def judge(skill, details, questions, **state):
         return {}, None
     rules = {"skill_rules": list(skill.rules)} if skill.rules else {}
     body = {
-        "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"),
+        "model": config.get("typesafe_model"),
         "state": {"request": details, **state},
         "questions": {key: {**q, "instructions": {**q["instructions"], **rules}} for key, q in questions.items()},
     }

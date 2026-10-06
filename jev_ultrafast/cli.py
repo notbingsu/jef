@@ -7,7 +7,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import gcal, router, skills
+from . import config, gcal, router, skills
 from .agent import Agent
 from .model import page_report
 
@@ -43,12 +43,36 @@ def confirm(title, lines):
     return yes(f"  {title}? [y/N] ")
 
 
-def save_trace(skill, record):
+# What a low trace keeps of each decision: the choice and its cost, not the request that produced it.
+DECISION = ("operation", "choice", "target", "confidence", "model", "usage", "latency_ms", "elapsed_ms")
+
+
+def low_trace(trace):
+    """The outcome and the steps: what ran, what was chosen, how long, at what cost. No page text, element tables,
+    request bodies or raw answers, which are most of a full trace and all of the page content it holds."""
+    kept = {k: v for k, v in trace.items() if k not in {"decision", "elements", "started_at"}}
+    kept["skill"] = {k: trace["skill"][k] for k in ("path", "api", "url")}
+    if trace.get("route"):
+        kept["route"] = {k: v for k, v in trace["route"].items() if k != "answers"}
+    if "page" in trace:
+        kept["page"] = {k: trace["page"][k] for k in ("url", "title")}
+    if "decisions" in trace:
+        kept["decisions"] = [{k: d.get(k) for k in DECISION} for d in trace["decisions"]]
+    if "judgments" in trace:
+        kept["judgments"] = [{k: j.get(k) for k in ("model", "latency_ms", "usage")} for j in trace["judgments"]]
+    return kept
+
+
+def save_trace(skill, record, mode):
+    """Write the run's trace under artifacts/runs/; returns its path, or None when tracing is off."""
+    if mode == "off":
+        return None
+    trace = {"skill": skill.__dict__, **record}
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    trace = Path("artifacts", "runs", *skill.path.split("/"), f"{stamp}.json")
-    trace.parent.mkdir(parents=True, exist_ok=True)
-    trace.write_text(json.dumps({"skill": skill.__dict__, **record}, indent=2, default=str))
-    return trace
+    path = Path("artifacts", "runs", *skill.path.split("/"), f"{stamp}.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(low_trace(trace) if mode == "low" else trace, indent=2, default=str))
+    return path
 
 
 def describe(step):
@@ -88,7 +112,7 @@ def make_report(goal, skill, state):
     return {"entries": entries, "missing": missing, "dropped": dropped, "model_call": info}
 
 
-def print_report(report):
+def print_report(report, mode):
     if "error" in report:
         print(f"  no report: {report['error']}")
         return
@@ -98,15 +122,16 @@ def print_report(report):
     if not report["entries"]:
         why = report["missing"] or "the page showed none of what you asked for."
         if left_out:
-            why = f"{left_out} entries could not be copied exactly from the page; the trace has them."
+            why = f"{left_out} entries could not be copied exactly from the page."
         print(f"  Nothing to report: {why}")
     elif left_out:
         print(f"  ({left_out} entries had values left out: not found word for word on the page)")
-    print("  (what the page showed when the run finished; the trace has the full text)")
+    print(f"  (what the page showed when the run finished{'; the trace has the full text' if mode == 'full' else ''})")
 
 
-def run_browser(skill, details, close=None, route=None, background=None):
+def run_browser(skill, details, close=None, route=None, background=None, trace=None):
     goal = f"{skill.task}\n{details}" if details else skill.task
+    mode = trace or config.get("trace")
     background = skill.background if background is None else background
     # A tab you never saw is clutter, so a background run cleans up after itself unless you ask it not to.
     close = background if close is None else close
@@ -122,31 +147,33 @@ def run_browser(skill, details, close=None, route=None, background=None):
         state = agent.snapshot()
         if skill.report and state["status"] == "done":
             report = make_report(goal, skill, state)
-        trace = save_trace(skill, {"route": route, **state, "report": report})
+        path = save_trace(skill, {"route": route, **state, "report": report}, mode)
         if close:
             agent.close()
     outcome = {
         "done": "DONE: the model reports success."
-        + (" The trace has the page it saw." if close else " Check the tab to confirm."),
+        + (" Check the tab to confirm." if not close else " The trace has the page it saw." if mode == "full" else ""),
         "blocked": "BLOCKED: no supported action could make progress.",
         "declined": "STOPPED: a confirm action was not approved.",
     }[state["status"]]
-    print(f"{state['elapsed_ms']:>6} ms  {outcome}\n{'':>9}  trace: {trace}")
+    print(f"{state['elapsed_ms']:>6} ms  {outcome}")
+    if path:
+        print(f"{'':>9}  trace: {path}")
     if report:
-        print_report(report)
+        print_report(report, mode)
     return 0 if state["status"] == "done" else 1
 
 
-def run_api(skill, details, route=None):
+def run_api(skill, details, route=None, trace=None):
     service, _, name = skill.api.partition(".")
     operation = APIS.get(service, {}).get(name)
     if operation is None:
         raise ValueError(f"{skill.path}: unknown api {skill.api!r}")
     print(f"{skill.path} → {skill.api}", flush=True)
     record = operation(skill, details, confirm)
-    trace = save_trace(skill, {"route": route, **record})
+    path = save_trace(skill, {"route": route, **record}, trace or config.get("trace"))
     outcome = "done" if record["status"] == "done" else "STOPPED: not confirmed; nothing changed."
-    print(f"  {outcome}\n  trace: {trace}")
+    print(f"  {outcome}" + (f"\n  trace: {path}" if path else ""))
     return 0 if record["status"] == "done" else 1
 
 
@@ -160,6 +187,11 @@ def main(argv=None):
         "--close",
         action=argparse.BooleanOptionalAction,
         help="close a browser skill's tab afterwards; default: on for a background run, off for a visible one",
+    )
+    parser.add_argument(
+        "--trace",
+        choices=config.CHOICES["trace"],
+        help="how much of this run to record in artifacts/runs/; default: jev.toml's trace (full if unset)",
     )
     parser.add_argument(
         "--background",
@@ -184,8 +216,8 @@ def main(argv=None):
         if args.route_only:
             return 0
         if skill.api:
-            return run_api(skill, request, route)
-        return run_browser(skill, request, args.close, route, args.background)
+            return run_api(skill, request, route, args.trace)
+        return run_browser(skill, request, args.close, route, args.background, args.trace)
     except (ValueError, RuntimeError) as error:
         raise SystemExit(f"jev: {error}") from None
     except KeyboardInterrupt:

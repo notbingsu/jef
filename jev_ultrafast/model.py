@@ -9,6 +9,7 @@ import time
 import anthropic
 import httpx
 
+from . import config
 from .questions import NEXT_ACTION, REPORT, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
@@ -156,7 +157,7 @@ def choose(state, goal, history, rules=()):
             "instructions": {**base, "operation": operation, "rules": [NEXT_ACTION, TARGET]},
         }
     body = {
-        "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"),
+        "model": config.get("typesafe_model"),
         "state": {
             "page": {k: state[k] for k in ("url", "title", "text")},
             "elements": elements,
@@ -235,9 +236,9 @@ def claude_content(key, model, system, schema, context):
 
 def chat_content(key, model, system, _schema, context):
     # json_object mode does not enforce the schema; callers validate every field.
-    base = os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
+    base = config.get("text_model_base_url").rstrip("/")
     reasoning = {"thinking": {"type": "disabled"}} if "api.deepseek.com/" in base else {"reasoning": {"effort": "low"}}
-    if os.environ.get("TEXT_MODEL_REASONING") == "none":
+    if config.get("text_model_reasoning") == "none":
         reasoning = {"reasoning": {"enabled": False}}
     result = post_json(
         base + "/chat/completions",
@@ -267,7 +268,7 @@ def complete_json(system, context, schema, purpose):
     key = os.environ.get("TEXT_MODEL_API_KEY")
     if not key:
         raise ValueError(f"{purpose} needs TEXT_MODEL_API_KEY; nothing is hardcoded or guessed.")
-    model = os.environ.get("TEXT_MODEL", "deepseek-chat")
+    model = config.get("text_model")
     started = time.perf_counter()
     # claude-* models use the Anthropic Messages API; anything else uses an OpenAI-compatible endpoint.
     content, usage = (claude_content if model.startswith("claude-") else chat_content)(

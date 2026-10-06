@@ -5,11 +5,10 @@ asked speculatively in the same request. Only the head for the chosen branch is 
 target in the browser loop. Deeper branches are flattened into their top-level branch's head.
 """
 
-import os
 import re
 import time
 
-from . import skills
+from . import config, skills
 from .model import typesafe, validate_choice
 from .questions import ROUTE, SKILL
 
@@ -66,7 +65,7 @@ def route(request, root=None):
                 "instructions": {"request": request, "use_case": name, "rules": [ROUTE, SKILL]},
             }
     body = {
-        "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"),
+        "model": config.get("typesafe_model"),
         "state": {"request": request},
         "questions": questions,
     }
