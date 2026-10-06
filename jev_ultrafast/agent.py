@@ -3,11 +3,13 @@
 import re
 import time
 
+from . import console
 from .browser import Browser, StalePage
 from .model import action_space, choose, field_context, field_text
 from .questions import MAX_STEPS
 
-STOPPED = {"done", "blocked", "declined"}
+# uncertain: Chrome never confirmed the last input, so it may or may not have happened. That run is over.
+STOPPED = {"done", "blocked", "declined", "uncertain"}
 
 
 def needs_approval(action, confirm):
@@ -18,7 +20,7 @@ def needs_approval(action, confirm):
 
 
 class Agent:
-    def __init__(self, url, goals, *, rules=(), confirm=(), approve=None, background=False):
+    def __init__(self, url, goals, *, rules=(), confirm=(), approve=None, background=False, browser=None):
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
             raise ValueError("Supply a task")
@@ -27,7 +29,8 @@ class Agent:
         self.confirm = tuple(confirm)
         self.approve = approve
         self.pending_text = None
-        self.browser = Browser(url, background=background)
+        # A given browser (a warm tab) is the caller's to keep or close.
+        self.browser = browser or Browser(url, background=background)
         try:
             page = self.browser.observe()
         except Exception:
@@ -77,6 +80,7 @@ class Agent:
                 raise ValueError("This run has stopped. Start a fresh run.")
             if len(state["decisions"]) >= MAX_STEPS * 2:
                 raise ValueError("Reached the run's model-call budget")
+            console.check()  # a safe point: nothing is in flight before a decision
             state["decision"] = choose(state["page"], state["goal"], state["history"], self.rules)
             state["decisions"].append(
                 {
@@ -104,6 +108,8 @@ class Agent:
             if len(state["history"]) >= MAX_STEPS:
                 state["status"] = "blocked"
                 raise ValueError(f"Stopped at the {MAX_STEPS}-action budget")
+            # A safe point: the decision is consumed and nothing is sent yet, so stopping here leaves no half-action.
+            console.check()
             # Without an approver, a gated action stops the run instead of executing.
             if needs_approval(action, self.confirm) and not (self.approve and self.approve(action, decision)):
                 state["status"] = "declined"
@@ -121,7 +127,12 @@ class Agent:
                     self.pending_text = (context, text, helper)
                     state["text_calls"].append({**helper, "field": action["label"], "value": text})
             # Browser.act checks freshness immediately before input, including after text generation or approval.
-            state["browser"].act(action, page, text=text)
+            try:
+                state["browser"].act(action, page, text=text)
+                confirmed = True
+            except TimeoutError:
+                # Chrome took the input but never answered: it may have landed. Log it as executed; never retry.
+                confirmed = False
             self.pending_text = None
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
             # Record execution before observing. A stale post-action observation must not erase the action.
@@ -144,8 +155,12 @@ class Agent:
                     "usage": decision["usage"],
                     "executed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
                     "elapsed_ms": state["elapsed_ms"],
+                    **({} if confirmed else {"unconfirmed": True}),
                 }
             )
+            if not confirmed:
+                state["status"] = "uncertain"
+                return self.snapshot()
             state["page"] = state["browser"].observe()
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
             state["history"][-1].update(

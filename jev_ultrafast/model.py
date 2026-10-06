@@ -47,10 +47,22 @@ def conform(value, spec):
     return False
 
 
+# A dropped connection, as opposed to a timeout. A long-lived jev serve can meet one on a pooled connection.
+TRANSIENT = (httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError)
+
+
 def post_json(url, key, body):
+    """POST to a model. A model call changes nothing, so a dropped connection is retried once; a timeout is not,
+    since retrying would only double the wait."""
+    reconnected = False
     for attempt in range(3):
         try:
             response = CLIENT.post(url, json=body, headers={"Authorization": f"Bearer {key}"})
+        except TRANSIENT:
+            if reconnected:
+                raise RuntimeError("Model connection failed; no action executed.") from None
+            reconnected = True
+            continue
         except httpx.HTTPError:
             raise RuntimeError("Model connection failed; no action executed.") from None
         if response.status_code in {429, 529, 503} and attempt < 2:

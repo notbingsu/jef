@@ -5,30 +5,58 @@ import json
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from browser_harness.admin import ensure_daemon
+from browser_harness.admin import daemon_browser_ready, ensure_daemon
 from browser_harness.helpers import cdp
+
+from . import config, console
 
 # Atomically read visible content and controls, preserving actual DOM node identity.
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
 
+
 class StalePage(ValueError):
     """A decision no longer refers to the observed page."""
 
 
-class Browser:
-    def __init__(self, url, background=False):
-        self.target = None
+# A warm tab gets this long to prove it is alive before it is replaced.
+HEALTH_TIMEOUT = 2.0
+
+
+def connect_chrome():
+    """Reach Chrome through the browser-harness daemon. A new connection makes Chrome ask "Allow remote debugging?";
+    approval stays manual, so say so, and give up after approval_wait_seconds instead of holding the queue."""
+    if not daemon_browser_ready():
+        wait = config.get("approval_wait_seconds")
+        console.say(
+            f"  connecting to Chrome; if it asks “Allow remote debugging?”, click Allow (waiting up to {wait} s)"
+        )
+        ensure_daemon(wait=wait)
+    else:
         ensure_daemon()
+
+
+class Browser:
+    def __init__(self, url, background=False, target=None, keep_page=False):
+        """A tab at `url`. With `target`, a warm tab to reuse: it is checked first, replaced if it fails, and left
+        on its current page only when `keep_page` and that page is already under `url`. `self.tab` records which."""
+        self.target = self.session = None
+        self.broken = False  # set when Chrome stops answering, so the pool drops this tab instead of keeping it
+        connect_chrome()
         try:
-            # A foreground tab is how you watch a run; a background one stays out of your way in the same Chrome,
-            # with the same profile and logins. Either way the tab is never activated again after this.
-            self.target = cdp("Target.createTarget", url="about:blank", background=background)["targetId"]
-            self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
-            self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
-            # Focus emulation keeps rAF, timers and menus running in a tab you are not looking at.
-            self.call("Emulation.setFocusEmulationEnabled", enabled=True)
+            if target and self.adopt(target):
+                if keep_page and (self.evaluate("location.href") or "").startswith(url):
+                    self.tab = "reused"
+                    return
+                self.tab = "navigated"
+            else:
+                # A foreground tab is how you watch a run; a background one stays out of your way in the same
+                # Chrome, with the same profile and logins. Either way the tab is never activated after this.
+                self.target = cdp("Target.createTarget", url="about:blank", background=background)["targetId"]
+                self.attach()
+                self.tab = "new"
             self.call("Page.navigate", url=url)
         except BaseException:
             # A half-built background tab would be invisible, so never leave one behind.
@@ -36,15 +64,60 @@ class Browser:
             raise
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            if self.evaluate("document.readyState") == "complete":
-                break
+            try:
+                if self.evaluate("document.readyState") == "complete":
+                    break
+            except StalePage:  # mid-navigation; a slow page gets the rest of the 15 s, then the model decides
+                pass
             time.sleep(0.02)
+
+    def attach(self):
+        self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
+        # Both overrides belong to the session, so a re-attached warm tab needs them again.
+        self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
+        # Focus emulation keeps rAF, timers and menus running in a tab you are not looking at.
+        self.call("Emulation.setFocusEmulationEnabled", enabled=True)
+
+    def adopt(self, target):
+        """Take over a warm tab if it is still there and answering; otherwise close what is left of it."""
+        try:
+            alive = any(t["targetId"] == target for t in cdp("Target.getTargets")["targetInfos"])
+            if not alive:  # you closed it, Chrome discarded it, or Chrome restarted
+                return False
+            self.target = target
+            self.attach()
+            try:  # a background tab Chrome froze must wake before it can answer
+                self.call("Page.setWebLifecycleState", state="active")
+            except RuntimeError:
+                pass
+            if (
+                cdp(
+                    "Runtime.evaluate",
+                    session_id=self.session,
+                    expression="1",
+                    returnByValue=True,
+                    _response_timeout=HEALTH_TIMEOUT,
+                )
+                .get("result", {})
+                .get("value")
+                == 1
+            ):
+                return True
+        except (RuntimeError, TimeoutError):
+            pass
+        self.close()
+        self.target = self.session = None
+        return False
 
     def call(self, method, **params):
         return cdp(method, session_id=self.session, **params)
 
     def evaluate(self, expression):
-        response = self.call("Runtime.evaluate", expression=expression, returnByValue=True)
+        """Read-only, so a Chrome that does not answer in time is just a stale page: observe and decide again."""
+        try:
+            response = self.call("Runtime.evaluate", expression=expression, returnByValue=True)
+        except TimeoutError:
+            raise StalePage("Chrome did not answer in time") from None
         if response.get("exceptionDetails"):
             raise StalePage("Document changed during evaluation")
         return response.get("result", {}).get("value")
@@ -80,8 +153,9 @@ class Browser:
                     awaitPromise=True,
                     returnByValue=True,
                 )
-            except RuntimeError:
+            except (RuntimeError, TimeoutError):
                 pass
+        timeouts = 0
         for attempt in range(10):
             try:
                 return browser_operation({"operation": "observe", "session": self.session})
@@ -89,6 +163,12 @@ class Browser:
                 if attempt == 9:
                     raise
                 time.sleep(0.02)
+            except TimeoutError:
+                # Reading changes nothing, so try again; three silent reads in a row mean Chrome is stuck.
+                timeouts += 1
+                if timeouts == 3:
+                    self.broken = True
+                    raise RuntimeError("Chrome stopped responding; nothing more was done") from None
         raise StalePage("Page did not settle")
 
     def fresh(self, page, action=None):
@@ -114,8 +194,58 @@ class Browser:
 
     def close(self):
         if self.target:
-            cdp("Target.closeTarget", targetId=self.target)
+            try:
+                cdp("Target.closeTarget", targetId=self.target)
+            except (RuntimeError, TimeoutError):
+                pass  # already gone
             self.target = None
+
+    def release(self):
+        """Hand the tab back to the pool: drop the session, keep the tab."""
+        if self.session:
+            try:
+                cdp("Target.detachFromTarget", sessionId=self.session)
+            except (RuntimeError, TimeoutError):
+                pass
+            self.session = None
+
+
+class Tabs:
+    """Warm background tabs, one per site, for the life of `jev serve`. Only background runs use them: a tab you watch
+    is yours once its run ends. A tab is reused in place only after a run that ended done; anything else, a blocked,
+    timed-out or cancelled run, a half-typed field, means the next run starts from the skill's URL."""
+
+    def __init__(self):
+        self.warm = {}  # site → {"target": id, "status": how the last run on it ended}
+
+    @staticmethod
+    def site(url):
+        parts = urlsplit(url)
+        return f"{parts.scheme}://{parts.netloc}"
+
+    def open(self, url):
+        warm = self.warm.pop(self.site(url), None) or {}
+        return Browser(url, background=True, target=warm.get("target"), keep_page=warm.get("status") == "done")
+
+    def keep(self, browser, url, status):
+        if browser.broken:
+            browser.close()
+            return
+        browser.release()
+        if browser.target:
+            self.warm[self.site(url)] = {"target": browser.target, "status": status}
+
+    def close_all(self):
+        for warm in self.warm.values():
+            try:
+                cdp("Target.closeTarget", targetId=warm["target"])
+            except (RuntimeError, TimeoutError, OSError):
+                pass
+        self.warm.clear()
+
+
+# The server's warm tabs. None outside `jev serve`: a one-off run has nothing to keep a tab for.
+TABS = None
 
 
 def fingerprint(state):

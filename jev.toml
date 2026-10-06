@@ -11,6 +11,12 @@ trace = "low"
 # TypeSafe model. Pin a version (e.g. "jev-1.13.0") to keep answers stable when the alias moves.
 # typesafe_model = "jev-latest"
 
+# The long-running jev server: requests start in milliseconds and background tabs stay warm.
+# server = true                 # --no-server runs one request in-process
+# server_idle_minutes = 10      # exits after this long with nothing to do
+# run_timeout_seconds = 180     # a run stops at its next safe point after this long
+# approval_wait_seconds = 120   # how long to wait for you to click Allow on Chrome's remote-debugging prompt
+
 # Text model for TYPE_TEXT, calendar arguments and reports. A claude-* model uses the Anthropic API.
 text_model = "claude-haiku-4-5"
 # Only for a model that isn't claude-*: its OpenAI-compatible endpoint, and "none" to turn reasoning off.

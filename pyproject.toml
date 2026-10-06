@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-jev = "jev_ultrafast.cli:main"
+jev = "jev_ultrafast.command:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -35,6 +35,10 @@ Secrets and settings live apart, because they are handled differently:
 | `text_model` | `deepseek-chat` | Text model for TYPE_TEXT, calendar arguments and reports. A `claude-*` model uses the Anthropic API, with `TEXT_MODEL_API_KEY` as the Anthropic key; anything else uses an OpenAI-compatible endpoint. |
 | `text_model_base_url` | `https://api.deepseek.com/v1` | That endpoint. Not used for `claude-*`. |
 | `text_model_reasoning` | `low` | `none` turns reasoning off on that endpoint. Not used for `claude-*`. |
+| `server` | `true` | Hand requests to a long-running `jev` server (see [The server](#the-server)). `--no-server` runs one request in-process instead. |
+| `server_idle_minutes` | `10` | The server exits after this long with nothing to do, closing its warm tabs. |
+| `run_timeout_seconds` | `180` | A run that is still going stops at its next safe point after this long. |
+| `approval_wait_seconds` | `120` | How long a request waits for you to click Allow on Chrome's "Allow remote debugging?" prompt. |
 
 For the Calendar API skills, create an OAuth client of type **Desktop app** in Google Cloud (Calendar API enabled) and save its JSON as `config/client_secrets.json`. The first calendar run opens a consent page and saves `config/token.json`. tele_gcal's `client_secrets.json` and `token.json` work as-is (same scope). Both files are git-ignored. The consent page redirects to `http://localhost:8765/`; a Web application client (tele_gcal's is one) must have that redirect URI registered, while a Desktop app client accepts it as is.
 
@@ -64,6 +68,8 @@ If use case × skill confidence is under 50%, jev asks before running; without a
 | `--close` / `--no-close` | Close the tab afterwards, or keep it. Default: closed after a background run, kept after a visible one. |
 | `--background` / `--no-background` | Override the skill's `background` setting, e.g. to watch a LinkedIn run happen. |
 | `--trace full\|low\|off` | Record this run at another level than `jev.toml`'s `trace`, e.g. `--trace full` to debug one run. |
+| `--no-server` | Run this request in this process, as before the server existed. Useful when debugging jev itself. |
+| `--stop-server` | Stop the server once its current run ends. The next `jev` starts a fresh one. |
 
 A browser skill opens a tab in the foreground, so you watch the real page. The terminal prints each action as it executes:
 
@@ -114,6 +120,18 @@ Each run can write a JSON trace to `artifacts/runs/<skill>/` (git-ignored), at t
 | `off` | Nothing; the terminal output is the only record. | none |
 
 A full trace holds whatever the page showed, such as your messages. `low` keeps a run's answer (a report, a calendar change) without the rest of the page. When a run misbehaves, repeat it with `--trace full`.
+
+## The server
+
+`jev …` hands its request to a long-running server for this project and streams back what the server says and asks. The first call starts it (about 2 s); after that a request starts in milliseconds, because the model SDKs are imported, the HTTP connections and the Chrome connection are open, and a background skill's tab is still warm. A second LinkedIn check reuses the open messaging page and is `DONE` in about 0.3 s instead of 3 s of page loading.
+
+- **One at a time.** Requests run in order; a second one prints `queued behind 1 request`.
+- **Ctrl-C** cancels at the next safe point: before a decision, an action, a model call or a confirmation. Nothing already sent is interrupted. A second Ctrl-C leaves at once. A client that goes away cancels its run, and any question it was asked is answered no.
+- **Warm tabs**, for background skills only: one per site, reused only if the last run there ended `DONE` and the tab is still on the skill's page; otherwise the next run starts from the skill's URL. A tab you closed, or one Chrome discarded or that stops answering, is replaced. Visible tabs are yours once their run ends. Traces record `"tab": "new" | "reused" | "navigated"`.
+- **Never stale.** The server serves only the code, `jev.toml` and `.env` it started with. Change any of them and the next request says `jev changed since its server started; starting a fresh one`. Skills are read from disk on every request.
+- **Slow or silent.** A run stops after `run_timeout_seconds` at its next safe point (`TIMEOUT`). A Chrome that doesn't answer a read for 5 s is re-read up to three times, then the run stops and the tab is dropped. If Chrome never confirms an input, the run ends `UNCERTAIN`: the input may have landed, so it is never retried, and the tab is left open for you to look at. A dropped connection to a model or a calendar lookup is retried once; a calendar change never is. Google sign-in gives up after 2 minutes.
+- **Chrome approval stays manual.** When the server needs a new Chrome connection (after Chrome restarts), the request says so; click Allow within `approval_wait_seconds`.
+- **Exits on its own** after `server_idle_minutes` idle. Its socket, log and lock live in `artifacts/server/`; the socket is readable only by you, since a request can drive your logged-in Chrome.
 
 ## The skill tree
 

@@ -15,8 +15,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from . import config
-from .model import complete_json, conform, nullable, strict, typesafe, validate_choice, validate_noul
+from . import config, console
+from .model import TRANSIENT, complete_json, conform, nullable, strict, typesafe, validate_choice, validate_noul
 from .questions import CALENDAR, CATEGORY, COLOR, EVENT, INVITE, RECOLOR, UNINVITE, UNINVITE_CRITERIA
 
 API = "https://www.googleapis.com/calendar/v3"
@@ -25,6 +25,8 @@ SECRETS = Path("config/client_secrets.json")
 TOKEN = Path("config/token.json")
 # A web OAuth client only redirects to the URIs registered for it; tele_gcal's client registers this port.
 OAUTH_PORT = 8765
+# A consent page left open must not hold jev serve's queue.
+OAUTH_WAIT = 120
 CLIENT = httpx.Client(timeout=25)
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -71,8 +73,14 @@ def credentials():
     if not creds or not creds.valid:
         if not SECRETS.exists():
             raise ValueError(f"Calendar API skills need a Google OAuth client file at {SECRETS}; see README.")
+        from google_auth_oauthlib.flow import WSGITimeoutError
+
         flow = InstalledAppFlow.from_client_secrets_file(str(SECRETS), SCOPES)
-        creds = flow.run_local_server(port=OAUTH_PORT)
+        console.say(f"  Google needs you to sign in again; a browser window opens (waiting up to {OAUTH_WAIT} s)")
+        try:
+            creds = flow.run_local_server(port=OAUTH_PORT, timeout_seconds=OAUTH_WAIT)
+        except WSGITimeoutError:
+            raise ValueError("Google sign-in timed out; nothing changed.") from None
     TOKEN.parent.mkdir(parents=True, exist_ok=True)
     TOKEN.write_text(creds.to_json())
     TOKEN.chmod(0o600)
@@ -89,12 +97,21 @@ class Calendar:
             from google.auth.transport.requests import Request
 
             self.creds.refresh(Request())
-        try:
-            response = CLIENT.request(
-                method, API + path, headers={"Authorization": f"Bearer {self.creds.token}"}, **kwargs
-            )
-        except httpx.HTTPError:
-            raise RuntimeError("Google Calendar connection failed; check the calendar before trying again.") from None
+        # A lookup is retried once on a dropped connection; a create, update or delete never is.
+        retries = 1 if method == "GET" else 0
+        while True:
+            try:
+                response = CLIENT.request(
+                    method, API + path, headers={"Authorization": f"Bearer {self.creds.token}"}, **kwargs
+                )
+                break
+            except httpx.HTTPError as error:
+                if retries and isinstance(error, TRANSIENT):
+                    retries -= 1
+                    continue
+                raise RuntimeError(
+                    "Google Calendar connection failed; check the calendar before trying again."
+                ) from None
         if response.is_error:
             try:
                 reason = response.json()["error"]["message"]
@@ -276,6 +293,7 @@ def setup(skill):
 
 
 def ask(skill, details, zone, schema, instructions, **context):
+    console.check()  # a safe point: before a model call, nothing has changed
     now = datetime.now(zone)
     request = {
         "task": skill.task,
@@ -433,6 +451,7 @@ def find(skill, details, calendar, zone, instructions):
         lambda: ask(skill, details, zone, SEARCH, instructions),
         lambda: judge(skill, details, questions),
     )
+    console.check()  # the model calls are back; nothing has changed yet
     category = chosen(answers, "category", questions)
     events = search(calendar, zone, args, skill.options, category)
     record = {"search": args, "category": category, "model_calls": [call], "judgments": [judged] if judged else []}
@@ -468,6 +487,7 @@ def pick(skill, details, calendar, zone):
     }
     criteria[NONE] = "None of these events is the one the request refers to."
     questions = {"event": {"type": "choice", "instructions": {"question": EVENT}, "criteria": criteria}}
+    console.check()  # a safe point: searched, nothing changed
     answers, judged = judge(skill, details, questions)
     record["judgments"].append(judged)
     answer = validate_choice(answers.get("event", {}), criteria)
@@ -485,7 +505,7 @@ def list_calendars(skill, details, confirm):
     items = Calendar(skill.options.get("calendar_id", "primary")).calendars()
     for item in items:
         mark = "*" if item.get("primary") else " "
-        print(f"  {mark} {item.get('summary', '(no title)'):<32} {item['id']}  {item.get('timeZone', '')}")
+        console.say(f"  {mark} {item.get('summary', '(no title)'):<32} {item['id']}  {item.get('timeZone', '')}")
     keys = ("id", "summary", "timeZone", "primary")
     return {"status": "done", "calendars": [{k: item.get(k) for k in keys} for item in items]}
 
@@ -501,9 +521,9 @@ def find_events(skill, details, confirm):
         "Use a null query to list everything in the range.",
     )
     for event in events:
-        print(f"  {describe(event, zone)}")
+        console.say(f"  {describe(event, zone)}")
     if not events:
-        print("  No matching events.")
+        console.say("  No matching events.")
     return {"status": "done", **record, "events": [brief(e) for e in events]}
 
 
@@ -514,13 +534,15 @@ def create_event(skill, details, confirm):
         lambda: ask(skill, details, zone, CREATE, "Fill in the new event from the details."),
         lambda: judge(skill, details, questions),
     )
+    console.check()  # the model calls are back; nothing has changed yet
     args = {**args, **judged_fields(answers, questions, skill.options)}
     body, notes = event_body(args, zone, skill.options)
     record = {"arguments": args, "model_calls": [call], "judgments": [judged] if judged else [], "body": body}
+    console.check()  # last safe point: once you approve, the change is sent
     if not confirm("Create this event", [*notes, *preview(body, zone)]):
         return {"status": "declined", **record}
     event = calendar.insert(body)
-    print(f"  created: {describe(event, zone)}\n  {event.get('htmlLink', '')}")
+    console.say(f"  created: {describe(event, zone)}\n  {event.get('htmlLink', '')}")
     return {"status": "done", **record, "event": brief(event)}
 
 
@@ -540,6 +562,7 @@ def update_event(skill, details, confirm):
         ),
         lambda: judge(skill, details, questions, event=current["event"]),
     )
+    console.check()  # the model calls are back; nothing has changed yet
     changes = {**(answer.get("changes") or {}), **judged_fields(answers, questions, skill.options, event)}
     body, notes = event_body(changes, zone, skill.options, current=event)
     record["model_calls"].append(call)
@@ -548,10 +571,11 @@ def update_event(skill, details, confirm):
         raise ValueError("The details did not describe any change; nothing changed.")
     record.update(event=brief(event), changes=changes, body=body)
     lines = [*notes, *preview(body, zone, event), f"match: {probability:.0%}"]
+    console.check()  # last safe point: once you approve, the change is sent
     if not confirm(f"Update “{event.get('summary') or '(no title)'}”", lines):
         return {"status": "declined", **record}
     updated = calendar.patch(event["id"], body)
-    print(f"  updated: {describe(updated, zone)}")
+    console.say(f"  updated: {describe(updated, zone)}")
     return {"status": "done", **record, "updated": brief(updated)}
 
 
@@ -560,10 +584,11 @@ def delete_event(skill, details, confirm):
     event, probability, record = pick(skill, details, calendar, zone)
     record["event"] = brief(event)
     lines = [describe(event, zone)] + (["(this occurrence only)"] if event.get("recurringEventId") else [])
+    console.check()  # last safe point: once you approve, the change is sent
     if not confirm(f"Delete “{event.get('summary') or '(no title)'}”", [*lines, f"match: {probability:.0%}"]):
         return {"status": "declined", **record}
     calendar.delete(event["id"])
-    print("  deleted.")
+    console.say("  deleted.")
     return {"status": "done", **record}
 
 

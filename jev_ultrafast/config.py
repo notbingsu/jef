@@ -15,6 +15,13 @@ DEFAULTS = {
     "text_model": "deepseek-chat",
     "text_model_base_url": "https://api.deepseek.com/v1",
     "text_model_reasoning": "low",
+    # `jev` hands requests to a long-running `jev serve`, started on demand; --no-server runs one in-process.
+    "server": True,
+    "server_idle_minutes": 10,
+    # A run stops at its next safe point after this long; nothing already sent is interrupted.
+    "run_timeout_seconds": 180,
+    # How long to wait for you to click Allow on Chrome's "Allow remote debugging?" prompt.
+    "approval_wait_seconds": 120,
 }
 CHOICES = {"trace": ("full", "low", "off"), "text_model_reasoning": ("low", "none")}
 # These were environment variables. One left in .env would now be ignored without a word, so it is an error instead.
@@ -45,7 +52,13 @@ def read(file):
     if unknown := set(data) - set(DEFAULTS):
         raise ValueError(f"{file}: unknown keys {sorted(unknown)}; allowed {sorted(DEFAULTS)}")
     for key, value in data.items():
-        if not isinstance(value, str) or not value.strip():
+        # The default's type is the setting's type; bool is checked exactly, since True is also an int.
+        kind = type(DEFAULTS[key])
+        if kind is bool and type(value) is not bool:
+            raise ValueError(f"{file}: {key} must be true or false")
+        if kind is int and (type(value) is not int or value <= 0):
+            raise ValueError(f"{file}: {key} must be a positive whole number")
+        if kind is str and (not isinstance(value, str) or not value.strip()):
             raise ValueError(f"{file}: {key} must be a non-empty string")
         if key in CHOICES and value not in CHOICES[key]:
             raise ValueError(f"{file}: {key} must be one of {', '.join(CHOICES[key])}")

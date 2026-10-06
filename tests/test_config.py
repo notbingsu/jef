@@ -9,12 +9,15 @@ from jev_ultrafast.skills import Skill
 
 
 def settings(tmp_path, text):
-    (tmp_path / "jev.toml").write_text(text)
+    config.path().write_text(text)
     config.read.cache_clear()
 
 
-def test_defaults_without_a_file():
+def test_defaults_without_a_file(tmp_path):
+    config.path().unlink()
+    config.read.cache_clear()
     assert config.get("trace") == "full" and config.get("typesafe_model") == "jev-latest"
+    assert config.get("server") is True and config.get("server_idle_minutes") == 10
 
 
 def test_file_values_override_defaults(tmp_path):
@@ -31,6 +34,10 @@ def test_file_values_override_defaults(tmp_path):
         ("trace = 1\n", "must be a non-empty string"),
         ('TYPESAFE_API_KEY = "sk-..."\n', "unknown keys"),
         ("trace = \n", "jev.toml"),
+        ('server = "yes"\n', "server must be true or false"),
+        ("server_idle_minutes = 0\n", "positive whole number"),
+        ("run_timeout_seconds = true\n", "positive whole number"),
+        ("approval_wait_seconds = 1.5\n", "positive whole number"),
     ],
 )
 def test_bad_settings_fail_loudly(tmp_path, text, message):
@@ -116,3 +123,29 @@ def test_the_trace_flag_overrides_jev_toml(tmp_path, monkeypatch, capsys):
     cli.main(["--skill", "linkedin-dms/check", "--trace", "low", "check", "my", "dms"])
     cli.main(["--skill", "linkedin-dms/check", "check", "my", "dms"])
     assert runs == ["low", None]  # None: run_browser falls back to jev.toml
+
+
+def test_typed_settings_are_read_as_their_type(tmp_path):
+    settings(tmp_path, "server = false\nserver_idle_minutes = 3\nrun_timeout_seconds = 30\n")
+    assert config.get("server") is False and config.get("server_idle_minutes") == 3
+    assert config.get("run_timeout_seconds") == 30
+
+
+def test_console_without_a_terminal_answers_no_and_stops_at_the_deadline(monkeypatch):
+    from jev_ultrafast import console
+
+    terminal = console.Console()
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("no terminal, so no question"))
+    assert terminal.ask("Send? [y/N] ") is False
+    terminal.check()  # no budget yet
+    terminal.budget(0.001)
+    import time
+
+    time.sleep(0.01)
+    with pytest.raises(console.Stopped, match="timeout"):
+        terminal.check()
+    terminal.budget(60)
+    terminal.cancelled = True
+    with pytest.raises(console.Stopped, match="cancelled"):
+        terminal.check()

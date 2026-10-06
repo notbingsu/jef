@@ -1,5 +1,7 @@
 """Headless runs and the report printed to the CLI. Offline: scripted text-model answers, a fake agent, no Chrome."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from jev_ultrafast import browser, cli, model
@@ -89,6 +91,7 @@ class FakeAgent:
 
     def __init__(self, url, goal, **options):
         self.options, self.closed = options, False
+        self.browser = options.get("browser") or SimpleNamespace(tab="new")
         self.state = {"status": "done", "page": PAGE, "history": [], "elapsed_ms": 5}
         FakeAgent.made.append(self)
 
