@@ -17,7 +17,19 @@ import httpx
 
 from . import config, console
 from .model import TRANSIENT, complete_json, conform, nullable, strict, typesafe, validate_choice, validate_noul
-from .questions import CALENDAR, CATEGORY, COLOR, EVENT, INVITE, RECOLOR, UNINVITE, UNINVITE_CRITERIA
+from .questions import (
+    ANSWER,
+    ANSWER_NEEDED,
+    ANSWER_NEEDED_CRITERIA,
+    CALENDAR,
+    CATEGORY,
+    COLOR,
+    EVENT,
+    INVITE,
+    RECOLOR,
+    UNINVITE,
+    UNINVITE_CRITERIA,
+)
 
 API = "https://www.googleapis.com/calendar/v3"
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
@@ -48,6 +60,12 @@ SEARCH = strict(
     query=nullable("string"), time_min=nullable("string"), time_max=nullable("string"), missing=nullable("string")
 )
 CHANGE = strict(changes=strict(**FIELDS), missing=nullable("string"))
+ANSWER_SCHEMA = strict(answer=nullable("string"))
+# A written answer reasons over everything in the range, so it fetches far more than a list shows.
+ANSWER_LIMIT = 100
+# Days spelled out for the text model, so it never has to work out a weekday; an open range gets two weeks.
+ANSWER_DAYS = 62
+OPEN_RANGE_DAYS = 14
 
 
 def credentials():
@@ -418,9 +436,9 @@ def judged_fields(answers, questions, options, current=None):
     return fields
 
 
-def search(calendar, zone, args, options, category=None):
-    """The text model picks the query and range, TypeSafe the keyword category; Google supplies the events."""
-    limit = int(options.get("max_results", 10))
+def window(args, zone):
+    """The searched range as aware datetimes. A date bound covers that whole day; with no start, the search begins
+    now unless the details point at the past. Either end may be None."""
     bounds = []
     for key, upper in (("time_min", False), ("time_max", True)):
         moment = parse_when(args[key], zone) if args.get(key) else None
@@ -430,8 +448,14 @@ def search(calendar, zone, args, options, category=None):
     time_min, time_max = bounds
     now = datetime.now(zone)
     if time_min is None and (time_max is None or time_max > now):
-        time_min = now  # upcoming events unless the details point at the past
-    time_min, time_max = (m.isoformat() if m else None for m in (time_min, time_max))
+        time_min = now
+    return time_min, time_max
+
+
+def search(calendar, zone, args, options, category=None, limit=None):
+    """The text model picks the query and range, TypeSafe the keyword category; Google supplies the events."""
+    limit = limit or int(options.get("max_results", 10))
+    time_min, time_max = (m.isoformat() if m else None for m in window(args, zone))
     keywords = options.get("keywords", {}).get(category) if category else None
     if not keywords:
         return calendar.events((args.get("query") or "").strip() or None, time_min, time_max, limit)
@@ -444,18 +468,86 @@ def search(calendar, zone, args, options, category=None):
     return [e for e in calendar.events(None, time_min, time_max, 250) if any(t in text(e) for t in terms)][:limit]
 
 
-def find(skill, details, calendar, zone, instructions):
-    """Search terms from the text model and a keyword category from TypeSafe, asked side by side."""
-    questions = category_question(skill.options)
+def answer_question():
+    return {
+        "answer": {
+            "type": "noul",
+            "instructions": {"question": ANSWER_NEEDED},
+            "criteria": ANSWER_NEEDED_CRITERIA,
+        }
+    }
+
+
+def find(skill, details, calendar, zone, instructions, answerable=False):
+    """Search terms from the text model and a keyword category from TypeSafe, asked side by side. With `answerable`,
+    the same TypeSafe request also judges whether the details need a written answer rather than a list; it depends
+    only on the words, so deciding costs no extra round trip. Its probability is in record["answer_needed"]."""
+    questions = {**category_question(skill.options), **(answer_question() if answerable else {})}
     (args, call), (answers, judged) = together(
         lambda: ask(skill, details, zone, SEARCH, instructions),
         lambda: judge(skill, details, questions),
     )
     console.check()  # the model calls are back; nothing has changed yet
     category = chosen(answers, "category", questions)
-    events = search(calendar, zone, args, skill.options, category)
-    record = {"search": args, "category": category, "model_calls": [call], "judgments": [judged] if judged else []}
+    needed = validate_noul(answers.get("answer", {})) if answerable else None
+    limit = ANSWER_LIMIT if needed is not None and needed > SURE else None
+    events = search(calendar, zone, args, skill.options, category, limit)
+    record = {
+        "search": args,
+        "category": category,
+        "model_calls": [call],
+        "judgments": [judged] if judged else [],
+        **(
+            {"answer_needed": round(needed, 3), "limit": limit or int(skill.options.get("max_results", 10))}
+            if answerable
+            else {}
+        ),
+    }
     return events, record
+
+
+def days(start, end, zone):
+    """Every date from start to end (an open end means two weeks), as "Tue 6 Oct", capped at ANSWER_DAYS."""
+    first = start.astimezone(zone).date()
+    last = (end.astimezone(zone) - timedelta(microseconds=1)).date() if end else first + timedelta(OPEN_RANGE_DAYS)
+    count = min((last - first).days + 1, ANSWER_DAYS)
+    return [day(first + timedelta(n)) for n in range(max(count, 1))]
+
+
+def answer(skill, details, zone, events, args, complete):
+    """The text model's answer to the question, worked out only from the events found. Returns (text or None, info)."""
+    console.check()  # a safe point: the search is done and nothing has changed
+    start, end = window(args, zone)
+    start = start or min((event_times(e, zone)[0] for e in events), default=datetime.now(zone))
+    if not isinstance(start, datetime):
+        start = datetime.combine(start, time.min, zone)
+    now = datetime.now(zone)
+    context = {
+        "question": details,
+        "now": now.isoformat(timespec="minutes"),
+        "timezone": zone.key,
+        "searched": {
+            "from": start.isoformat(timespec="minutes"),
+            "to": end.isoformat(timespec="minutes") if end else None,
+        },
+        "days": days(start, end, zone),
+        "complete": complete,
+        "events": [
+            {
+                "when": describe(e, zone),
+                "start": e["start"].get("dateTime") or e["start"].get("date"),
+                "end": e["end"].get("dateTime") or e["end"].get("date"),
+                "all_day": "date" in e["start"],
+            }
+            for e in events
+        ],
+        **({"skill_rules": list(skill.rules)} if skill.rules else {}),
+    }
+    output, info = complete_json(ANSWER, context, ANSWER_SCHEMA, "Answering a calendar question")
+    text = output.get("answer") if output and conform(output, ANSWER_SCHEMA) else None
+    if not isinstance(text, str) or not text.strip() or len(text) > 600:
+        return None, info
+    return text.strip(), info
 
 
 def relative_day(event, zone):
@@ -518,8 +610,24 @@ def find_events(skill, details, confirm):
         calendar,
         zone,
         "Choose a search query and time range for the events the details ask about. "
-        "Use a null query to list everything in the range.",
+        "Use a null query to list everything in the range. For a question about free time, availability, counts, "
+        "durations or clashes, use a null query and a range long enough to answer it, such as the next two weeks.",
+        answerable=True,
     )
+    shown = int(skill.options.get("max_results", 10))
+    if record["answer_needed"] > SURE:
+        # The question needs reasoning over the events, not just the events: the last mile is the text model's.
+        try:
+            text, info = answer(skill, details, zone, events, record["search"], complete=len(events) < record["limit"])
+            record["answer"] = {"text": text, "model_call": info}
+        except (ValueError, RuntimeError) as error:
+            text, record["answer"] = None, {"error": str(error)}
+        console.say(
+            f"  → {text}" if text else f"  no answer: {record['answer'].get('error', 'the events could not answer it')}"
+        )
+        if len(events) > shown:
+            console.say(f"  (worked out from {len(events)} events; the trace lists them)")
+            return {"status": "done", **record, "events": [brief(e) for e in events]}
     for event in events:
         console.say(f"  {describe(event, zone)}")
     if not events:

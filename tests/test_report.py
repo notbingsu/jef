@@ -166,7 +166,8 @@ def fake_cdp(monkeypatch, fail_at=None):
             raise RuntimeError("boom")
         return {"targetId": "t", "sessionId": "s"}
 
-    monkeypatch.setattr(browser, "ensure_daemon", lambda: log.append(("daemon", {})))
+    monkeypatch.setattr(browser, "ensure_daemon", lambda **kwargs: log.append(("daemon", kwargs)))
+    monkeypatch.setattr(browser, "daemon_browser_ready", lambda: True)  # never ask the real daemon
     monkeypatch.setattr(browser, "cdp", cdp)
     monkeypatch.setattr(browser.Browser, "evaluate", lambda self, expression: "complete")
     return log

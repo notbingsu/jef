@@ -25,12 +25,15 @@ For Google Calendar, the text model writes only what has no candidate list: titl
 | Step | TypeSafe question | Candidates (from code) |
 | --- | --- | --- |
 | search (find, update, delete) | `category` Choice | `options.keywords` categories + `NONE` |
+| find | `answer` Noul: does the request need a written answer, not just the matching events? | — (judged from the words alone) |
 | pick (update, delete) | `event` Choice | the search results, each with a code-computed relative day + `NONE` |
 | create, update | `color` Choice | `options.colors` categories + `NONE` |
 | create, update | `invite_*` Noul per address | addresses a regex finds in the details |
 | update | `remove_*` Noul per guest | guests already on the picked event |
 
 Update is three stages: search terms ∥ category, then the pick, then changes for the picked event ∥ color and guests. The text model sees only the picked event, never the other results. A pick under 0.5 probability, or `NONE`, stops the run; other judgments under 0.5 are not applied. Code maps the choice to the event ID, the category to its `colorId`, and builds the guest list. Every field is validated before the confirmation prompt: times must parse and be ordered, and colors must be Google's 1–11. Mutations are sent once, never retried.
+
+The `answer` Noul is the last-mile gate. It depends only on the request, so it rides in the search's TypeSafe request, beside the text model's search plan, and deciding costs no round trip. Above 0.5 the search fetches up to 100 events instead of `max_results`, and the text model gets one more call (`ANSWER` in questions.py): the question, `now`, the searched range, every date in it with its weekday computed in code, each event's start and end, and whether the fetch was complete. It returns `{"answer": string | null}`, checked for type and length. It is free text, the one place a calendar run generates prose, so it is printed as an answer with the events beneath it as evidence (or a count when there are many) and never feeds an action. An unusable answer leaves the events on screen and the run `done`.
 
 Dates and times stay with the text model. Jev reads dates as text and is unreliable at date arithmetic, so a TypeSafe version would ask for each date's parts (month, day, weekday, week offset, hour, minute, duration) and assemble them in code. That removes no text-model call while titles still need one.
 

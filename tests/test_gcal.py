@@ -259,3 +259,68 @@ def test_describe_uses_compact_times():
     )
     all_day = {"summary": "Trip", "start": {"date": "2026-10-09"}, "end": {"date": "2026-10-12"}}
     assert gcal.describe(all_day, ZONE) == "Fri 9 Oct – Sun 11 Oct, all day  Trip"
+
+
+QUESTION = "when is the next evening i am free"
+WEEK = {"query": None, "time_min": "2026-10-06", "time_max": "2026-10-12", "missing": None}
+
+
+def evening(day, summary="Dinner"):
+    return event(summary, start=f"2026-10-{day:02d}T19:00:00+08:00", end=f"2026-10-{day:02d}T21:00:00+08:00")
+
+
+def test_a_question_gets_a_written_answer_from_everything_in_the_range(run, capsys):
+    items = [evening(6), evening(7, "Sync")]
+    reply = {"answer": "Thursday 8 Oct is your next free evening (taking evening as 6pm-10pm)."}
+    record, calendar, sent, judged = run(
+        gcal.find_events, [WEEK, reply], items, verdicts={"answer": 0.9}, details=QUESTION
+    )
+    # One TypeSafe request carries both the category and the answer judgment, beside the search plan.
+    assert len(judged) == 1 and {"answer", "category"} <= set(judged[0]["questions"])
+    assert calendar.calls[0][-1] == gcal.ANSWER_LIMIT  # an answer reasons over everything, not the first ten
+    context = sent[1]
+    assert context["question"] == QUESTION and context["complete"] is True
+    assert context["days"][:3] == ["Tue 6 Oct", "Wed 7 Oct", "Thu 8 Oct"] and context["days"][-1] == "Mon 12 Oct"
+    assert [e["when"] for e in context["events"]] == ["Tue 6 Oct 7pm–9pm  Dinner", "Wed 7 Oct 7pm–9pm  Sync"]
+    assert record["answer"]["text"].startswith("Thursday") and record["answer_needed"] == 0.9
+    out = capsys.readouterr().out
+    assert "→ Thursday 8 Oct is your next free evening" in out and "Dinner" in out  # the evidence follows
+
+
+def test_a_plain_listing_asks_no_text_model_for_an_answer(run, capsys):
+    record, calendar, sent, _ = run(
+        gcal.find_events, [WEEK], [evening(6)], verdicts={"answer": 0.1}, details="what's on"
+    )
+    assert len(sent) == 1 and "answer" not in record and calendar.calls[0][-1] == 10
+    assert "Dinner" in capsys.readouterr().out
+
+
+def test_an_empty_range_still_gets_an_answer(run):
+    record, _, sent, _ = run(
+        gcal.find_events, [WEEK, {"answer": "Tonight: nothing is on."}], [], verdicts={"answer": 0.9}, details=QUESTION
+    )
+    assert sent[1]["events"] == [] and record["answer"]["text"] == "Tonight: nothing is on."
+
+
+@pytest.mark.parametrize("reply", [None, {"answer": None}, {"answer": "  "}, {"answer": 3}, {"answer": "x" * 601}])
+def test_an_unusable_answer_still_shows_the_events(run, capsys, reply):
+    record, _, _, _ = run(gcal.find_events, [WEEK, reply], [evening(6)], verdicts={"answer": 0.9}, details=QUESTION)
+    out = capsys.readouterr().out
+    assert record["status"] == "done" and "no answer" in out and "Dinner" in out
+
+
+def test_a_full_fetch_is_flagged_incomplete_and_summarised(run, capsys):
+    items = [evening(6, f"Event {n}") for n in range(gcal.ANSWER_LIMIT)]
+    record, _, sent, _ = run(
+        gcal.find_events, [WEEK, {"answer": "Unclear."}], items, verdicts={"answer": 0.9}, details=QUESTION
+    )
+    assert sent[1]["complete"] is False
+    out = capsys.readouterr().out
+    assert f"worked out from {gcal.ANSWER_LIMIT} events" in out and "Event 99" not in out
+
+
+def test_days_cover_the_range_and_an_open_range_gets_two_weeks():
+    start = gcal.datetime(2026, 10, 6, 9, tzinfo=ZONE)
+    end = gcal.datetime(2026, 10, 9, tzinfo=ZONE)  # midnight: the 8th is the last whole day
+    assert gcal.days(start, end, ZONE) == ["Tue 6 Oct", "Wed 7 Oct", "Thu 8 Oct"]
+    assert len(gcal.days(start, None, ZONE)) == gcal.OPEN_RANGE_DAYS + 1

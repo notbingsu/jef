@@ -1,3 +1,3 @@
-description = "Show events matching a question"
+description = "Show events, or answer a question about my schedule such as free time, counts or clashes"
 api = "gcal.find_events"
 task = "Find the calendar events the details ask about."

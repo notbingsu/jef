@@ -192,6 +192,22 @@ What the code guarantees, whatever the model returns:
 - **Missing details:** if the request is missing something, the run stops with the model's question and changes nothing.
 - **No retries:** a create, update or delete is never retried. If the connection drops mid-request, check the calendar.
 
+### Questions about your schedule
+
+Some questions aren't answered by a list. "When is the next evening I'm free?" needs the evenings worked out from what's on. When you search, TypeSafe also judges whether your words need a written answer rather than the matching events. That judgment rides in the same request as the search's other judgments, so it adds no wait. Only if it says yes (over 50%) does the text model get one more call, with your question and every event in the range:
+
+```text
+calendar/find-events → gcal.find_events
+  → Wed 7 Oct after 6pm is your next available evening, as your work ends at 6pm and you have no events scheduled that evening.
+  (worked out from 19 events; the trace lists them)
+```
+
+- **Everything in range:** an answer fetches up to 100 events, not the 10 a list shows, and the search plans a long enough range ("the next two weeks") with no keyword filter.
+- **Code does the calendar math the model shouldn't:** the model gets each event's start and end, plus every date in the range with its weekday already written.
+- **Stated assumptions:** time outside the range counts as unknown, and if 100 events didn't cover it the model is told the list may be incomplete. If it has to assume a definition, such as what counts as evening, it says which. Add your own as a rule in `skills/calendar/_branch.toml`, e.g. "Evening means 6pm to 10pm."
+- **A failed answer still shows the events,** and the run still succeeds. The judgment's probability and the answer are in the trace.
+- **Lists stay lists:** "any events this week" scores about 0.1 and makes no extra call.
+
 Search defaults to upcoming events unless your details point at the past. Update and delete on a recurring event affect only the matched occurrence. tele_gcal's "add to calendar" template link isn't ported.
 
 ## Library
