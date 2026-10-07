@@ -290,7 +290,16 @@ def complete_json(system, context, schema, purpose):
         output = json.loads(content)
     except (TypeError, ValueError):
         output = None
-    info = {"model": model, "latency_ms": round((time.perf_counter() - started) * 1000), "usage": usage}
+    # `request` and `raw` are what a full trace needs to say why a run came out as it did: without them, the one
+    # probabilistic step in an API skill is the only unauditable thing in the record. Both are metadata, so a low
+    # trace drops them with the rest of the per-call plumbing.
+    info = {
+        "model": model,
+        "latency_ms": round((time.perf_counter() - started) * 1000),
+        "usage": usage,
+        "request": context,
+        "raw": content,
+    }
     return (output if isinstance(output, dict) else None), info
 
 

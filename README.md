@@ -122,11 +122,13 @@ Each run can write a JSON trace to `artifacts/runs/<skill>/` (git-ignored), at t
 
 | Level | Keeps | Size |
 | --- | --- | --- |
-| `full` | Everything: the page text and element table, every model request and raw answer. What you need to see why a run went wrong. | ~250 KB for a LinkedIn check |
-| `low` | What ran and what came of it: route, status, each action and decision (operation, target, confidence, latency, tokens), calendar arguments and changes, any report. No page text, element tables, request bodies or raw answers. | a few KB |
+| `full` | Everything `low` keeps, plus how the run got there: the page text and element table, every model request and raw answer, and every probability, latency and token count. What you need to see why a run went the way it did. | ~250 KB for a LinkedIn check |
+| `low` | What was passed and what was done: the goal in your own words, each action with the control it acted on and the text it carried, the arguments an API skill sent, and the run's answer. No page text or element table, and none of the metadata behind a choice. | ~1 KB |
 | `off` | Nothing; the terminal output is the only record. | none |
 
-A full trace holds whatever the page showed, such as your messages. `low` keeps a run's answer (a report, a calendar change) without the rest of the page. When a run misbehaves, repeat it with `--trace full`.
+The split is by key, at any depth: `low` drops everything in `cli.METADATA` — probabilities and confidences, latencies and token counts, model names, and the per-call records holding each request and raw answer. So a new skill's own record is covered without touching `cli.py`, and a low trace never has a number in it that only a model would know.
+
+A full trace holds whatever the page showed, such as your messages, and whatever was sent to a model. `low` keeps a run's answer (a report, a calendar change, a holdings list) without the rest. When a run misbehaves, repeat it with `--trace full`: that is the level that records what each model was asked and what it replied, which is usually the difference between two runs of the same request.
 
 ## The server
 

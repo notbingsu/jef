@@ -81,15 +81,56 @@ DECISION = {
     "latency_ms": 230,
     "elapsed_ms": 240,
 }
+# One executed action, with the strings it carried and the metadata behind the choice.
+STEP = {
+    "step": 1,
+    "action": "Write a message…",
+    "kind": "fill",
+    "choice": "9",
+    "operation": "TYPE_TEXT",
+    "target": "9",
+    "text": "Thanks, Thursday works",
+    "page_changed": True,
+    "url": "https://www.linkedin.com/messaging/",
+    "probability": 0.97,
+    "confidence": 0.95,
+    "latency_ms": 310,
+    "text_helper": "deepseek-chat",
+    "text_latency_ms": 120,
+    "usage": {"input_tokens": 700},
+    "executed_ms": 1500,
+    "elapsed_ms": 1510,
+}
 RECORD = {
-    "route": {"use_case": "linkedin-dms", "skill": "linkedin-dms/check", "answers": {"use_case": {}}},
+    "route": {
+        "use_case": "linkedin-dms",
+        "skill": "linkedin-dms/check",
+        "use_case_probability": 0.99,
+        "skill_probability": 0.94,
+        "latency_ms": 380,
+        "answers": {"use_case": {}},
+    },
+    "goal": "Read DMs.\ncheck my dms",
     "page": {"url": "https://www.linkedin.com/messaging/", "title": "LinkedIn", "text": "Katharine: Thanks…"},
     "decisions": [DECISION],
-    "history": [],
+    "history": [STEP],
+    "text_calls": [{"model": "deepseek-chat", "latency_ms": 120, "request": {"goal": "…"}, "raw": '{"text": "…"}'}],
     "elements": [{"index": "1", "label": "Search"}],
+    "elapsed_ms": 1510,
     "status": "done",
     "report": {"entries": [{"name": "Katharine Tan", "when": "Sep 29", "text": None}]},
 }
+
+
+def keys(value):
+    """Every key in a trace, at any depth."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from keys(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from keys(item)
 
 
 def written(tmp_path, monkeypatch, mode):
@@ -101,17 +142,60 @@ def written(tmp_path, monkeypatch, mode):
 def test_full_trace_keeps_everything(tmp_path, monkeypatch):
     _, trace = written(tmp_path, monkeypatch, "full")
     assert trace["page"]["text"] and trace["decisions"][0]["request"] and trace["elements"]
+    # What was asked of the text model and what came back: without these, the one probabilistic step in an API
+    # skill is the only part of a run that cannot be read back.
+    assert trace["text_calls"][0]["request"] and trace["text_calls"][0]["raw"]
+    assert trace["history"][0]["probability"] == 0.97 and trace["route"]["skill_probability"] == 0.94
 
 
-def test_low_trace_keeps_the_steps_and_outcome_but_no_page_content(tmp_path, monkeypatch):
+def test_low_trace_keeps_the_strings_passed_and_the_actions_taken(tmp_path, monkeypatch):
     path, trace = written(tmp_path, monkeypatch, "low")
     assert trace["status"] == "done" and trace["skill"]["path"] == "linkedin-dms/check"
-    assert trace["decisions"] == [{k: DECISION[k] for k in cli.DECISION}]
+    # The request in the user's own words, which is the one string no other file holds.
+    assert trace["goal"] == "Read DMs.\ncheck my dms"
+    # The action, the control it acted on, and the text it typed.
+    assert trace["history"] == [
+        {
+            "step": 1,
+            "action": "Write a message…",
+            "kind": "fill",
+            "choice": "9",
+            "operation": "TYPE_TEXT",
+            "target": "9",
+            "text": "Thanks, Thursday works",
+            "page_changed": True,
+            "url": "https://www.linkedin.com/messaging/",
+        }
+    ]
+    assert trace["route"] == {"use_case": "linkedin-dms", "skill": "linkedin-dms/check"}
     assert trace["page"] == {"url": "https://www.linkedin.com/messaging/", "title": "LinkedIn"}
-    assert "elements" not in trace and "answers" not in trace["route"]
+    assert "elements" not in trace
     # The report is the run's answer, so it stays.
     assert trace["report"]["entries"][0]["name"] == "Katharine Tan"
     assert "resume" not in path.read_text().replace("Katharine Tan", "")
+
+
+def test_low_trace_drops_every_probability_timing_and_cost(tmp_path, monkeypatch):
+    _, trace = written(tmp_path, monkeypatch, "low")
+    assert not set(keys(trace)) & cli.METADATA
+
+
+def test_low_trace_needs_no_change_for_a_new_skill(tmp_path, monkeypatch):
+    """The scrub goes by key at any depth, so an api skill's own record is covered without touching cli.py."""
+    record = {
+        "goal": "Show the holdings in my moomoo account.\nwhat do I hold",
+        "status": "done",
+        "searched": {"from": "2026-10-01", "to": "2026-10-07"},
+        "holdings": [{"code": "US.NVDA", "value": 2153.06}],
+        "answer": {"text": "NVIDIA is the biggest position.", "model_call": {"model": "x", "latency_ms": 9}},
+        "answer_needed": 0.79,
+        "judgments": [{"model": "jev-1.13.0", "usage": {}}],
+    }
+    monkeypatch.chdir(tmp_path)
+    trace = json.loads(cli.save_trace(SKILL, record, "low").read_text())
+    assert trace["searched"]["from"] == "2026-10-01" and trace["holdings"][0]["code"] == "US.NVDA"
+    assert trace["answer"] == {"text": "NVIDIA is the biggest position."}
+    assert not set(keys(trace)) & cli.METADATA
 
 
 def test_trace_off_writes_nothing(tmp_path, monkeypatch):

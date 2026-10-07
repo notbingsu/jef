@@ -2,8 +2,10 @@
 # Missing keys take the default shown. Unknown keys are rejected, so a typo fails loudly.
 
 # How much of each run to keep in artifacts/runs/:
-#   "full"  everything, including the page text and every model request (default; best for debugging)
-#   "low"   what ran, what was chosen, timings, token use and any report; no page content or request bodies
+#   "full"  everything "low" keeps, plus the page text, every model request and raw answer, and every
+#           probability, latency and token count (default; the level that explains why a run came out as it did)
+#   "low"   the strings passed and the actions taken: the goal in your words, each action and its text, the
+#           arguments an API skill sent, and the run's answer. No page content and no model metadata
 #   "off"   nothing
 # One run can differ: jev --trace full ...
 trace = "low"

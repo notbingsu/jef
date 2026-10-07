@@ -29,23 +29,63 @@ def confirm(title, lines):
     return console.ask(f"  {title}? [y/N] ")
 
 
-# What a low trace keeps of each decision: the choice and its cost, not the request that produced it.
-DECISION = ("operation", "choice", "target", "confidence", "model", "usage", "latency_ms", "elapsed_ms")
+# The difference between the two levels. A low trace says what was passed and what was done; a full trace also says
+# how sure each model was, how long it took and what it cost. These keys carry that second part, and a low trace
+# drops them wherever they appear, so a new skill's record needs no change here.
+METADATA = frozenset(
+    {
+        # How sure: every probability, and the routing and matching figures derived from them.
+        "probability",
+        "probabilities",
+        "confidence",
+        "operation_probabilities",
+        "target_probabilities",
+        "target_confidence",
+        "use_case_probability",
+        "skill_probability",
+        "answer_needed",
+        "match",
+        # How long, and what it cost.
+        "latency_ms",
+        "elapsed_ms",
+        "executed_ms",
+        "text_latency_ms",
+        "usage",
+        "model",
+        "text_helper",
+        # The plumbing behind a choice: the bodies sent, the answers as they came back, the per-call records.
+        "request",
+        "raw",
+        "raw_answers",
+        "answers",
+        "decisions",
+        "judgments",
+        "model_call",
+        "model_calls",
+        "text_calls",
+        "fingerprint",
+    }
+)
+# Page content: most of a full trace by size, and all of what the page showed.
+CONTENT = frozenset({"decision", "elements", "started_at"})
+
+
+def without_metadata(value):
+    """`value` with every METADATA key removed, at any depth."""
+    if isinstance(value, dict):
+        return {key: without_metadata(item) for key, item in value.items() if key not in METADATA}
+    if isinstance(value, list):
+        return [without_metadata(item) for item in value]
+    return value
 
 
 def low_trace(trace):
-    """The outcome and the steps: what ran, what was chosen, how long, at what cost. No page text, element tables,
-    request bodies or raw answers, which are most of a full trace and all of the page content it holds."""
-    kept = {k: v for k, v in trace.items() if k not in {"decision", "elements", "started_at"}}
+    """What was passed and what was done: the goal in the user's own words, each action and the text it carried, and
+    the run's answer. No page text or element table, and none of the metadata behind a choice."""
+    kept = without_metadata({k: v for k, v in trace.items() if k not in CONTENT})
     kept["skill"] = {k: trace["skill"][k] for k in ("path", "api", "url")}
-    if trace.get("route"):
-        kept["route"] = {k: v for k, v in trace["route"].items() if k != "answers"}
-    if "page" in trace:
-        kept["page"] = {k: trace["page"][k] for k in ("url", "title")}
-    if "decisions" in trace:
-        kept["decisions"] = [{k: d.get(k) for k in DECISION} for d in trace["decisions"]]
-    if "judgments" in trace:
-        kept["judgments"] = [{k: j.get(k) for k in ("model", "latency_ms", "usage")} for j in trace["judgments"]]
+    if trace.get("page"):
+        kept["page"] = {k: trace["page"].get(k) for k in ("url", "title")}
     return kept
 
 
@@ -177,12 +217,13 @@ def run_api(skill, details, route=None, trace=None):
     if operation is None:
         raise ValueError(f"{skill.path}: unknown api {skill.api!r}")
     console.say(f"{skill.path} → {skill.api}")
+    goal = f"{skill.task}\n{details}" if details else skill.task
     try:
         record = operation(skill, details, confirm)
     except console.Stopped as stop:
         # Stopped only before a model call or a confirmation, so nothing was changed.
         record = {"status": stop.reason}
-    path = save_trace(skill, {"route": route, **record}, trace or config.get("trace"))
+    path = save_trace(skill, {"route": route, "goal": goal, **record}, trace or config.get("trace"))
     outcome = {
         "done": "done",
         "declined": "STOPPED: not confirmed; nothing changed.",
