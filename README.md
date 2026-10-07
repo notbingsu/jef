@@ -5,7 +5,7 @@ A personal agent driven by a tree of skills. Forked from [browser-use/jev-ultraf
 You say what you want in plain words; Jev picks the skill. Skills come in two kinds:
 
 - **Browser skills** drive a real Chrome tab. Each step reads the page into an indexed element table. In one request, [TypeSafe's Jev](https://docs.typesafe.ai/introduction) picks an operation (`CLICK`, `TYPE_TEXT`, `SELECT`, `SCROLL_*`, `WAIT`, `DONE`, `BLOCKED`) and a target element for it. A small LLM writes text only for `TYPE_TEXT`. Code owns execution: model output never becomes selectors, coordinates or JavaScript.
-- **API skills** call a service directly, with no browser. TypeSafe makes the closed-set calls (which event, which guests, which category) and the text model writes titles, times and search terms; code validates both and asks before changing anything. Google Calendar is the first, ported from [tele_gcal](https://github.com/notbingsu/tele_gcal).
+- **API skills** call a service directly, with no browser. TypeSafe makes the closed-set calls (which event, which guests, which category) and the text model writes titles, times and search terms; code validates both and asks before changing anything. Google Calendar was the first, ported from [tele_gcal](https://github.com/notbingsu/tele_gcal); [moomoo](#moomoo-holdings) reads a brokerage account.
 
 ## Setup
 
@@ -43,11 +43,17 @@ Secrets and settings live apart, because they are handled differently:
 
 For the Calendar API skills, create an OAuth client of type **Desktop app** in Google Cloud (Calendar API enabled) and save its JSON as `config/client_secrets.json`. The first calendar run opens a consent page and saves `config/token.json`. tele_gcal's `client_secrets.json` and `token.json` work as-is (same scope). Both files are git-ignored. The consent page redirects to `http://localhost:8765/`; a Web application client (tele_gcal's is one) must have that redirect URI registered, while a Desktop app client accepts it as is.
 
+For the moomoo skills, install [moomoo OpenD](https://openapi.moomoo.com/) and log in. Every query goes to that
+gateway on `127.0.0.1:11111`: there is no cloud endpoint and no API key, so nothing works while OpenD is closed, and
+no credential of yours reaches jev. The skills are read-only and never unlock trading, so leave the trade password
+locked. `jev list my moomoo accounts` shows your account ids; pin one as `acc_id` in `skills/moomoo/_branch.toml`.
+
 ## Ask jev
 
 ```bash
 uv run jev dentist friday oct 9 at 3pm for an hour
 uv run jev any flights this month?
+uv run jev how is my nvidia doing
 uv run jev move the dentist to 5.30pm
 uv run jev "reply to Ada Lovelace on linkedin: thanks, Thursday works, I'll send an invite"
 ```
@@ -205,6 +211,12 @@ skills/
     _branch.toml           background = true, rules, confirm
     check.toml             read-only; report = true
     reply.toml
+  moomoo/
+    _branch.toml           acc_id, security_firm, trd_env, currency
+    accounts.toml          api = "moomoo.accounts"
+    holdings.toml          api = "moomoo.holdings"
+    position.toml          api = "moomoo.position"
+    activity.toml          api = "moomoo.activity"
 ```
 
 | Key | Where | Meaning |
@@ -261,6 +273,73 @@ calendar/find-events → gcal.find_events
 - **Lists stay lists:** "any events this week" scores about 0.1 and makes no extra call.
 
 Search defaults to upcoming events unless your details point at the past. Update and delete on a recurring event affect only the matched occurrence. tele_gcal's "add to calendar" template link isn't ported.
+
+## moomoo holdings
+
+The `moomoo/` skills read a brokerage account through moomoo's OpenAPI: what you hold, how one position is doing,
+and what was traded over a range.
+
+```text
+route: moomoo/holdings  (100%, 300 ms)
+moomoo/holdings → moomoo.holdings
+  account 283726802396538239 (REAL, FUTUSG)
+  USD  total 6,774.32   positions 5,497.38   cash 1,275.05   available 4,955.16   risk LEVEL3
+
+  USD   code       name                  qty       cost      price        value         P/L    P/L %
+        US.NVDA    NVIDIA                  9     193.60     238.91     2,150.18     +407.78   23.40%
+        US.GOOGL   Alphabet-A              4     211.80     348.24     1,392.96     +545.77   64.42%
+        subtotal                                                       3,543.14     +953.55
+```
+
+**Read-only by construction.** Nothing in `jev_ultrafast/moomoo.py` places, changes or cancels an order, and the
+SDK's `unlock_trade` is never called — a test asserts that none of those calls appears in the module at all. So
+these skills work with trading still locked in OpenD, and no run can move your money.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `acc_id` | | Which account to read. `jev list my moomoo accounts` shows the ids. |
+| `security_firm` | tries each | The moomoo entity the account is with, e.g. `FUTUSG`. |
+| `trd_env` | `REAL` | `REAL` reads the account you trade in; `SIMULATE` reads the paper one. |
+| `currency` | `USD` | The single currency account totals are converted to. |
+| `max_results` | 20 | Rows an activity listing shows. |
+| `timezone` | this machine's | Used for "last week" and the like. |
+| `host` / `port` | `127.0.0.1` / `11111` | Where OpenD listens. |
+
+What the code guarantees, whatever the model returns:
+
+- **Average cost, as the app shows it.** The SDK also returns `cost_price`, `pl_val` and `pl_ratio` on a diluted
+  cost basis, which overstate gains and understate losses; nothing here reads them, so the numbers match your phone.
+  A missing app field stops the read rather than reporting a zero.
+- **Currencies are never added.** Each position is shown and subtotalled under its own currency, and the one
+  account-wide total comes from the funds query, which states the currency it is in.
+- **One account, pinned.** With several accounts in the environment and no `acc_id`, a run stops and names them
+  rather than guess which portfolio you meant. Ids are read as exact integers: a real one is 18 digits, past what a
+  float holds.
+- **Fresh, not cached.** Positions and funds are read with `refresh_cache`, which is what makes them match the app.
+  That path allows 10 reads per 30 s per account, and a run reads once.
+- **Holdings are found by code.** `moomoo/position` offers TypeSafe only the rows just read, so no model ever names
+  an instrument; under 50% the run stops and names the likeliest two.
+- **Dates are checked.** The text model writes the activity range; code checks the shape and the order, and an open
+  range covers the last week.
+
+### Questions about your portfolio
+
+As with the calendar, TypeSafe judges whether your words need a written answer rather than a list, in the same
+request. Only if it says yes does the text model get one more call, with the holdings just read:
+
+```text
+moomoo/holdings → moomoo.holdings
+  → Your biggest position is NVIDIA at $2,150.73 USD, roughly 39% of your invested portfolio value ($5,497.38 USD).
+```
+
+The answer is worked out only from the positions fetched, is shown and traced but never acted on, and the skill's
+rules tell it to describe the account rather than suggest buying or selling anything. A failed answer still shows
+the holdings, and the run still succeeds.
+
+> Automating a brokerage account is yours to get right. moomoo's own disclaimer is explicit that the skill pack is
+> a technical aid, not investment advice, and that you are responsible for what an agent does with it. These skills
+> only read, which is the main reason to keep them that way.
+
 
 ## Library
 

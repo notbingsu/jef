@@ -1,0 +1,3 @@
+description = "Show my moomoo account's fills and orders over a date range, such as what I traded last week"
+api = "moomoo.activity"
+task = "Show the fills and orders in my moomoo account for the range the details give."

@@ -1,0 +1,3 @@
+description = "Show one holding in my moomoo account: how a particular stock I own is doing"
+api = "moomoo.position"
+task = "Show the one holding in my moomoo account that the details refer to."

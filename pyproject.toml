@@ -10,6 +10,7 @@ dependencies = [
     "browser-harness==0.1.13",
     "google-auth-oauthlib>=1.2",
     "httpx[http2]>=0.28,<1",
+    "moomoo-api>=10.4.6408",
 ]
 
 [project.scripts]

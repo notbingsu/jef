@@ -1,0 +1,3 @@
+description = "Show everything I hold in my moomoo account, or answer a question about the portfolio as a whole, such as its total value, what it is up or down, weights, or the best and worst positions"
+api = "moomoo.holdings"
+task = "Show the holdings in my moomoo account."

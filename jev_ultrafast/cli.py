@@ -6,13 +6,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import browser, config, console, gcal, router, skills
+from . import browser, config, console, gcal, moomoo, router, skills
 from .agent import Agent
 from .command import load_environment, parse
 from .model import page_report
 
 # api = "service.operation" in a leaf skill resolves here.
-APIS = {"gcal": gcal.OPERATIONS}
+APIS = {"gcal": gcal.OPERATIONS, "moomoo": moomoo.OPERATIONS}
 # Below this routing confidence (use case × skill), ask before running the chosen skill.
 SURE = 0.5
 

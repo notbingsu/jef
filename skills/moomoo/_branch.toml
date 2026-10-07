@@ -1,0 +1,20 @@
+description = "My moomoo brokerage account: what I hold and how it is doing"
+# Read-only. These skills query the account through a local OpenD gateway; none of them can place, change or cancel
+# an order, and trading can stay locked in OpenD.
+rules = [
+  "Report the account as it is; never suggest buying, selling or holding anything.",
+  "Average cost, and the profit or loss measured against it, are what the moomoo app shows; never use a diluted cost.",
+  "Amounts in different currencies are never added together.",
+]
+
+[options]
+# Which account to read. `jev list my moomoo accounts` lists the ids; pin one, because an unpinned run with several
+# accounts in this environment stops rather than guess which portfolio you meant.
+acc_id = 283726802396538239
+security_firm = "FUTUSG"  # the moomoo entity the account is with; unset tries each in turn
+trd_env = "REAL"          # REAL reads the account you trade in; SIMULATE reads the paper one
+currency = "USD"          # the single currency account totals are converted to
+max_results = 20          # rows an activity listing shows
+# timezone = "Asia/Singapore"  # default: this machine's own zone, used for "last week" and the like
+# host = "127.0.0.1"           # where OpenD listens
+# port = 11111
