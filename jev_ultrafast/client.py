@@ -84,51 +84,75 @@ def connect():
     raise RuntimeError(f"the jev server did not start; see {log_path()}, or run with --no-server")
 
 
-def run(argv):
-    interactive = sys.stdin.isatty()
-    for _ in range(2):  # a server running older code answers "restart" once; the next connection reaches a fresh one
+def request(argv, dispatch, tty=True, notice=print):
+    """Hand one run to this project's server and let `dispatch(stream)` relay it. A server running older code answers
+    "restart" as its first message, before running anything, which is the only reason one retry is safe here: nothing
+    a run has already started is ever sent again."""
+    for _ in range(2):
         connection = connect()
         stream = connection.makefile("rw", encoding="utf-8")
-        server.send(stream, {"type": "run", "argv": argv, "tty": interactive, "fingerprint": server.fingerprint()})
+        server.send(stream, {"type": "run", "argv": argv, "tty": tty, "fingerprint": server.fingerprint()})
         try:
-            result = relay(stream, interactive)
+            result = dispatch(stream)
         finally:
             # The socket stays open while a file made from it is, so close both: the server sees us go at once.
             stream.close()
             connection.close()
         if result != "restart":
             return result
-        print("  jev changed since its server started; starting a fresh one", flush=True)
+        notice("  jev changed since its server started; starting a fresh one")
     raise RuntimeError("the jev server kept asking for a restart; run with --no-server")
 
 
-def relay(stream, interactive):
+def run(argv):
+    interactive = sys.stdin.isatty()
+    return request(argv, lambda stream: terminal(stream, interactive), tty=interactive)
+
+
+def terminal(stream, interactive):
+    """relay() for this terminal: print each line, read y/N, and let Ctrl-C cancel at the next safe point. relay()
+    keeps nothing across iterations, so re-entering it after an interrupt resumes the same stream."""
     cancelling = False
+
+    def say(text):
+        print(text, flush=True)
+
+    def ask(prompt):
+        return interactive and input(prompt).strip().lower() in {"y", "yes"}
+
     while True:
         try:
-            line = stream.readline()
-            if not line:
-                raise RuntimeError(f"the jev server stopped unexpectedly; see {log_path()}")
-            message = json.loads(line)
-            kind = message.get("type")
-            if kind == "say":
-                print(message["text"], flush=True)
-            elif kind == "queued":
-                ahead = message["ahead"]
-                print(f"  queued behind {ahead} request{'s' if ahead > 1 else ''}", flush=True)
-            elif kind == "ask":
-                answer = interactive and input(message["prompt"]).strip().lower() in {"y", "yes"}
-                server.send(stream, {"type": "answer", "value": answer})
-            elif kind == "done":
-                return message["exit"]
-            elif kind == "restart":
-                return "restart"
+            return relay(stream, say, ask)
         except KeyboardInterrupt:
             if cancelling:
                 raise
             cancelling = True
             print("\n  cancelling at the next safe point (Ctrl-C again to leave now)", flush=True)
             server.send(stream, {"type": "cancel"})
+
+
+def relay(stream, say, ask, send=server.send):
+    """Dispatch one run's messages until it ends; returns its exit code, or "restart" when the server runs older
+    code. `say(text)` shows a line and `ask(prompt) -> bool` answers a question, so a terminal prints and reads
+    while a chat front end sends and waits. A front end whose other threads also write to this stream (a chat
+    cancelling a run) passes its own serialized `send`."""
+    while True:
+        line = stream.readline()
+        if not line:
+            raise RuntimeError(f"the jev server stopped unexpectedly; see {log_path()}")
+        message = json.loads(line)
+        kind = message.get("type")
+        if kind == "say":
+            say(message["text"])
+        elif kind == "queued":
+            ahead = message["ahead"]
+            say(f"  queued behind {ahead} request{'s' if ahead > 1 else ''}")
+        elif kind == "ask":
+            send(stream, {"type": "answer", "value": ask(message["prompt"])})
+        elif kind == "done":
+            return message["exit"]
+        elif kind == "restart":
+            return "restart"
 
 
 def stop():

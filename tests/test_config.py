@@ -38,6 +38,10 @@ def test_file_values_override_defaults(tmp_path):
         ("server_idle_minutes = 0\n", "positive whole number"),
         ("run_timeout_seconds = true\n", "positive whole number"),
         ("approval_wait_seconds = 1.5\n", "positive whole number"),
+        ("telegram_allowed = 123\n", "list of positive whole numbers"),
+        ('telegram_allowed = ["me"]\n', "list of positive whole numbers"),
+        ("telegram_allowed = [0]\n", "list of positive whole numbers"),
+        ("telegram_allowed = [true]\n", "list of positive whole numbers"),
     ],
 )
 def test_bad_settings_fail_loudly(tmp_path, text, message):
@@ -129,6 +133,13 @@ def test_typed_settings_are_read_as_their_type(tmp_path):
     settings(tmp_path, "server = false\nserver_idle_minutes = 3\nrun_timeout_seconds = 30\n")
     assert config.get("server") is False and config.get("server_idle_minutes") == 3
     assert config.get("run_timeout_seconds") == 30
+
+
+def test_a_list_setting_defaults_to_empty_and_reads_back_as_a_list(tmp_path):
+    settings(tmp_path, "")
+    assert config.get("telegram_allowed") == []  # nobody may drive jev from a chat until it is set
+    settings(tmp_path, "telegram_allowed = [123456789, 5]\n")
+    assert config.get("telegram_allowed") == [123456789, 5]
 
 
 def test_console_without_a_terminal_answers_no_and_stops_at_the_deadline(monkeypatch):

@@ -22,3 +22,7 @@ text_model = "claude-haiku-4-5"
 # Only for a model that isn't claude-*: its OpenAI-compatible endpoint, and "none" to turn reasoning off.
 # text_model_base_url = "https://api.deepseek.com/v1"
 # text_model_reasoning = "low"
+
+# Numeric Telegram ids allowed to drive jev from a chat (jev-telegram). Empty means nobody: a chat request
+# drives your logged-in Chrome and your calendar. @userinfobot tells you yours.
+telegram_allowed = [494072734]

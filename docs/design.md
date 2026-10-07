@@ -65,11 +65,34 @@ A skill with `report = true` ends with a read of the finished page, since a back
 
 `jev` (command.py) parses, then hands the request to `jev serve` (server.py) over a Unix socket in `artifacts/server/`, mode 0600 inside a 0700 folder. The client imports nothing heavy (the package `__init__` is lazy), so a request to a warm server costs milliseconds. A `flock` keeps one server per project; the client starts one when none answers and waits while a retiring one finishes. Newline-delimited JSON carries `run`/`answer`/`cancel` one way and `queued`/`say`/`ask`/`done`/`restart` the other.
 
-Every request runs on one worker thread, in order, under a console (console.py) bound to its connection: `say` streams, `ask` waits for the client (five minutes, then no), and a cancel or a closed connection sets the console's stop flag and answers any pending question no. Nothing in jev prints or reads input directly, which is also the seam a chat front end would use.
+Every request runs on one worker thread, in order, under a console (console.py) bound to its connection: `say` streams, `ask` waits for the client (five minutes, then no), and a cancel or a closed connection sets the console's stop flag and answers any pending question no. Nothing in jev prints or reads input directly, which is also the seam the chat front end uses.
 
 **Staleness.** The server answers only a client whose fingerprint (jev's source, `jev.toml`'s and `.env`'s modification times) matches its own; otherwise it replies `restart`, stops listening, finishes its queue and exits, and the client starts a fresh one. Skills are re-read per request. HTTP clients rely on httpx closing pooled connections after 5 s idle; a dropped connection is retried once for calls that change nothing (TypeSafe, the text model, Google GETs) and never for a calendar change. A warm tab is checked before reuse: it must still be among Chrome's targets, wake from a frozen lifecycle state, and answer `Runtime.evaluate` within 2 s; re-attaching re-applies the device-metrics and focus overrides, which belong to the session. It stays on its page only if the last run there ended `done` and its URL is still under the skill's; any other ending, including a half-typed field, sends the next run back to the skill's URL.
 
 **Slow work and timeouts.** `run_timeout_seconds` is a budget, not a kill: `console.check()` runs only at safe points (before each decision and action, before and after each model call, before a confirmation) and raises `Stopped`, so an action or mutation already sent always completes and is logged. A confirmed change goes ahead even if the clock ran out while you decided. A CDP read that times out (browser-harness gives up after 5 s) is a stale page: observe again, and after three silent reads stop with "Chrome stopped responding" and drop the tab. A timeout while input is being dispatched is different: the input may have landed, so the action is logged as executed with `unconfirmed`, the run ends `uncertain`, nothing is retried, and the tab is left open and out of the pool. Opening a Chrome connection is bounded by `approval_wait_seconds` and tells the requester to click Allow, so a forgotten prompt fails one request instead of holding the queue.
+
+## The chat front end
+
+`jev-telegram` (telegram.py) is a second client of that socket, not a console inside the server: a chat message
+becomes one `argv`, and the run gets the same warm imports, warm Chrome connection and single queue a terminal
+request gets. `client.relay` is shared, parameterised by a `say` and an `ask`, so both front ends speak one protocol
+and the chat renders `queued` with no code of its own.
+
+There is no chat state machine. `console.ask` returns a bool, so every question is a y/N gate and becomes two
+inline buttons; the run holds everything else while it blocks on the socket, which is why nothing has to be stored
+between updates or resumed after a restart. Each question carries a token in its `callback_data`, because that data
+stays in the chat's history forever and a press from an earlier question must be inert. A run's lines are coalesced
+into one message, edited as it goes and wrapped in `<pre>`: Telegram takes about one message a second and collapses
+the spaces jev lines its columns up with, and every body is escaped, since an unescaped `<` would have Telegram
+reject the edit and silently drop the rest of the run's output.
+
+The client waits less for an answer than the server does (`ASK_WAIT` below `ASK_TIMEOUT`), so the chat's answer is
+always what resolves a question rather than the server's own timeout: an answer the server is no longer waiting for
+would sit in that run's queue and resolve the next one. A cancel is `{"type": "cancel"}` and never a closed socket,
+which would cancel too but throw away the lines the run still owes the chat. Refusal is the default — an id not in
+`telegram_allowed`, or any chat that is not that person's own private one, runs nothing and is not replied to, since
+a reply only tells a stranger the bot is there, and a chat drives the owner's logged-in Chrome. Browser runs are
+always background runs: nobody is watching a tab from a phone. There are still no screenshots.
 
 ## Boundaries
 

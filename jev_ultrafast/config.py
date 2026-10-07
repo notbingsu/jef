@@ -22,8 +22,13 @@ DEFAULTS = {
     "run_timeout_seconds": 180,
     # How long to wait for you to click Allow on Chrome's "Allow remote debugging?" prompt.
     "approval_wait_seconds": 120,
+    # Numeric Telegram ids allowed to drive jev from a chat (jev-telegram). Empty means nobody, because a chat
+    # request drives your logged-in Chrome and your calendar.
+    "telegram_allowed": [],
 }
 CHOICES = {"trace": ("full", "low", "off"), "text_model_reasoning": ("low", "none")}
+# What a list setting holds, since an empty default cannot say.
+ITEMS = {"telegram_allowed": int}
 # These were environment variables. One left in .env would now be ignored without a word, so it is an error instead.
 MOVED = {
     "TYPESAFE_MODEL": "typesafe_model",
@@ -60,6 +65,10 @@ def read(file):
             raise ValueError(f"{file}: {key} must be a positive whole number")
         if kind is str and (not isinstance(value, str) or not value.strip()):
             raise ValueError(f"{file}: {key} must be a non-empty string")
+        if kind is list and (
+            not isinstance(value, list) or any(type(item) is not ITEMS[key] or item <= 0 for item in value)
+        ):
+            raise ValueError(f"{file}: {key} must be a list of positive whole numbers")
         if key in CHOICES and value not in CHOICES[key]:
             raise ValueError(f"{file}: {key} must be one of {', '.join(CHOICES[key])}")
     return {**DEFAULTS, **data}

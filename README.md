@@ -23,7 +23,7 @@ Secrets and settings live apart, because they are handled differently:
 
 | File | Holds | In git |
 | --- | --- | --- |
-| `.env` | API keys only: `TYPESAFE_API_KEY`, `TEXT_MODEL_API_KEY` | no |
+| `.env` | API keys only: `TYPESAFE_API_KEY`, `TEXT_MODEL_API_KEY`, `TELEGRAM_BOT_TOKEN` | no |
 | `jev.toml` | everything else, typed and validated | yes |
 
 `jev.toml` is optional; a missing key takes its default. Like skills, unknown keys and bad values are rejected, so a typo fails loudly instead of being ignored. A setting still in `.env` (`TEXT_MODEL=…`) is an error that says where it moved.
@@ -39,6 +39,7 @@ Secrets and settings live apart, because they are handled differently:
 | `server_idle_minutes` | `10` | The server exits after this long with nothing to do, closing its warm tabs. |
 | `run_timeout_seconds` | `180` | A run that is still going stops at its next safe point after this long. |
 | `approval_wait_seconds` | `120` | How long a request waits for you to click Allow on Chrome's "Allow remote debugging?" prompt. |
+| `telegram_allowed` | `[]` | Numeric Telegram ids that may drive jev from a chat (see [Telegram](#telegram)). Empty means nobody. |
 
 For the Calendar API skills, create an OAuth client of type **Desktop app** in Google Cloud (Calendar API enabled) and save its JSON as `config/client_secrets.json`. The first calendar run opens a consent page and saves `config/token.json`. tele_gcal's `client_secrets.json` and `token.json` work as-is (same scope). Both files are git-ignored. The consent page redirects to `http://localhost:8765/`; a Web application client (tele_gcal's is one) must have that redirect URI registered, while a Desktop app client accepts it as is.
 
@@ -132,6 +133,57 @@ A full trace holds whatever the page showed, such as your messages. `low` keeps 
 - **Slow or silent.** A run stops after `run_timeout_seconds` at its next safe point (`TIMEOUT`). A Chrome that doesn't answer a read for 5 s is re-read up to three times, then the run stops and the tab is dropped. If Chrome never confirms an input, the run ends `UNCERTAIN`: the input may have landed, so it is never retried, and the tab is left open for you to look at. A dropped connection to a model or a calendar lookup is retried once; a calendar change never is. Google sign-in gives up after 2 minutes.
 - **Chrome approval stays manual.** When the server needs a new Chrome connection (after Chrome restarts), the request says so; click Allow within `approval_wait_seconds`.
 - **Exits on its own** after `server_idle_minutes` idle. Its socket, log and lock live in `artifacts/server/`; the socket is readable only by you, since a request can drive your logged-in Chrome.
+
+## Telegram
+
+`jev-telegram` drives the same agent from a chat: say what you want, and approve a change with a button.
+
+```bash
+cp .env.example .env              # add TELEGRAM_BOT_TOKEN from BotFather's /newbot
+# jev.toml: telegram_allowed = [123456789]   @userinfobot tells you your numeric id
+uv run jev-telegram               # from the project root
+```
+
+It is a second client of the same server, not a bot of its own: a chat request gets the warm imports, the warm Chrome
+connection and the one-at-a-time queue a terminal request gets. **One message is one run.** There is no chat state
+machine, because `console.ask` returns only a bool — every question jev asks is a y/N gate, so it becomes two
+buttons, and the run itself holds the state while it waits on the socket.
+
+```text
+you   move the dentist to 5.30pm
+jev   route: calendar/update-event  (86%, 410 ms)
+      calendar/update-event → gcal.update_event
+        from: Fri 9 Oct 3pm–4pm  Dentist
+        to:   Fri 9 Oct 5.30pm–6.30pm  Dentist
+        match: 96%
+jev   Update “Dentist”?            [ Yes ]  [ No ]
+```
+
+A run's lines are coalesced into one message that is edited as it goes, since Telegram takes about one message a
+second; it is sent as a monospace block so jev's columns stay aligned on a phone. `/help` lists the skill tree,
+`/cancel` stops a run at its next safe point, and `/start` says what to type. A second message while a run is going
+is refused rather than queued; a request from another allowed chat queues on the server and says `queued behind 1
+request`.
+
+Browser skills always run **in the background** from a chat: nobody is watching a tab from a phone, and a visible one
+would steal focus on your desktop. So a skill you mean to drive from chat wants `report = true`, or the chat sees
+only the action lines and `DONE`.
+
+Before you rely on it:
+
+- **Anyone in `telegram_allowed` can drive your logged-in Chrome and your calendar.** The default is empty, meaning
+  nobody, and the bot refuses to start until you set it. An id that is not on the list runs nothing and gets no
+  reply at all — only a log line naming the id.
+- **Private chats only.** A group is refused even from an allowed id, because the output would go to everyone in it.
+  Turn group invitations off with BotFather's `/setjoingroups`, and leave `/setprivacy` enabled.
+- **Do the first Chrome approval and the first Google sign-in at the keyboard.** Chrome's "Allow remote debugging?"
+  prompt and Google's consent page cannot be clicked from a phone; over Telegram they just time out.
+- **Raise `run_timeout_seconds` if you answer from a phone.** A run's budget starts when it does, not when it asks,
+  so a confirmation left for a few minutes can hit the clock. A calendar change you approve still goes ahead; a
+  browser run stops at its next safe point.
+- **Restart the bot after changing jev.** A code change retires the *server*, which the bot restarts automatically,
+  but the bot process keeps running the code it started with. Settings, including the allowlist, are read once too.
+- The token is a credential: `.env` only, and it is git-ignored.
 
 ## The skill tree
 
