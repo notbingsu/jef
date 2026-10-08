@@ -77,8 +77,8 @@ class Job(console.Console):
             except (OSError, ValueError):
                 self.disconnect()
 
-    def say(self, text=""):
-        self.emit({"type": "say", "text": text})
+    def say(self, text="", item=None):
+        self.emit({"type": "say", "text": text, **({"item": item} if item is not None else {})})
 
     def ask(self, prompt):
         if not self.interactive:

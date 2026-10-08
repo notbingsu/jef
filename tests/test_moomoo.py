@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas
 import pytest
 
-from jev_ultrafast import moomoo
+from jev_ultrafast import console, moomoo
 from jev_ultrafast.skills import Skill
 
 OK = moomoo.sdk.RET_OK
@@ -355,3 +355,53 @@ def test_accounts_lists_the_ids_a_pin_needs(run, capsys):
     record, _, _, _ = run("accounts")
     assert [a["acc_id"] for a in record["accounts"]] == [42, 7]
     assert "42" in capsys.readouterr().out
+
+
+# --- what a run says each line is about -------------------------------------------------------------------------
+
+@pytest.fixture
+def lines(monkeypatch):
+    """Record both halves of every line a run says: the terminal's text, and what it said the line was about."""
+    said = []
+
+    class Recorder(console.Console):
+        def say(self, text="", item=None):
+            said.append((text, item))
+
+    monkeypatch.setattr(console, "current", lambda: Recorder())
+    return said
+
+
+def items(said, kind):
+    return [item for _, item in said if item and item.get("kind") == kind]
+
+
+def test_a_holding_carries_the_numbers_a_front_end_needs_to_lay_out(run, lines):
+    run("holdings", verdicts={"answer": 0.1})
+    held = items(lines, "holding")
+    assert len(held) == 1 and held[0]["code"] == "US.NVDA"
+    # The app-aligned fields, so a front end never has to parse them back out of a column.
+    assert held[0]["cost"] == 193.6 and held[0]["unrealized"] == 410.67 and held[0]["percent"] == 23.57
+    assert items(lines, "funds")[0]["total"] == 6775.4
+    assert items(lines, "account")[0]["env"] == "REAL"
+    assert items(lines, "subtotal")[0]["value"] == 2153.06
+
+
+def test_activity_says_its_range_and_whether_it_chose_it(run, lines):
+    run("activity", answers=[{"start": None, "end": None, "missing": None}])
+    assert items(lines, "range")[0]["from"] and items(lines, "assumed")
+    assert items(lines, "fill") == [] and items(lines, "count")[0]["what"] == "fills"
+
+
+def test_a_written_answer_says_whether_it_is_an_answer(run, lines):
+    run("holdings", verdicts={"answer": 0.9}, answers=[{"answer": "NVIDIA is the biggest position."}])
+    answer = items(lines, "answer")[0]
+    assert answer["ok"] is True and answer["text"] == "NVIDIA is the biggest position."
+
+
+def test_the_terminal_text_is_untouched_by_any_of_it(run, lines):
+    """An item is additional. Whatever a chat does with it, the terminal still gets its columns."""
+    run("holdings", verdicts={"answer": 0.1})
+    text = [said for said, _ in lines]
+    assert any("P/L %" in line and "cost" in line and "price" in line for line in text)
+    assert any("US.NVDA" in line and "NVIDIA" in line and "193.60" in line and "23.57%" in line for line in text)

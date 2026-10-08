@@ -95,7 +95,8 @@ def credentials():
         from google_auth_oauthlib.flow import WSGITimeoutError
 
         flow = InstalledAppFlow.from_client_secrets_file(str(SECRETS), SCOPES)
-        console.say(f"  Google needs you to sign in again; a browser window opens (waiting up to {OAUTH_WAIT} s)")
+        signing = f"Google needs you to sign in again; a browser window opens (waiting up to {OAUTH_WAIT} s)"
+        console.say(f"  {signing}", item={"kind": "note", "text": signing})
         try:
             creds = flow.run_local_server(port=OAUTH_PORT, timeout_seconds=OAUTH_WAIT)
         except WSGITimeoutError:
@@ -599,7 +600,16 @@ def list_calendars(skill, details, confirm):
     items = Calendar(skill.options.get("calendar_id", "primary")).calendars()
     for item in items:
         mark = "*" if item.get("primary") else " "
-        console.say(f"  {mark} {item.get('summary', '(no title)'):<32} {item['id']}  {item.get('timeZone', '')}")
+        console.say(
+            f"  {mark} {item.get('summary', '(no title)'):<32} {item['id']}  {item.get('timeZone', '')}",
+            item={
+                "kind": "calendar",
+                "id": item["id"],
+                "summary": item.get("summary", "(no title)"),
+                "zone": item.get("timeZone", ""),
+                "primary": bool(item.get("primary")),
+            },
+        )
     keys = ("id", "summary", "timeZone", "primary")
     return {"status": "done", "calendars": [{k: item.get(k) for k in keys} for item in items]}
 
@@ -624,14 +634,14 @@ def find_events(skill, details, confirm):
             record["answer"] = {"text": text, "model_call": info}
         except (ValueError, RuntimeError) as error:
             text, record["answer"] = None, {"error": str(error)}
-        console.say(
-            f"  → {text}" if text else f"  no answer: {record['answer'].get('error', 'the events could not answer it')}"
-        )
+        said = text or f"no answer: {record['answer'].get('error', 'the events could not answer it')}"
+        console.say(f"  {'→ ' if text else ''}{said}", item={"kind": "answer", "text": said, "ok": bool(text)})
         if len(events) > shown:
-            console.say(f"  (worked out from {len(events)} events; the trace lists them)")
+            note = f"(worked out from {len(events)} events; the trace lists them)"
+            console.say(f"  {note}", item={"kind": "note", "text": note})
             return {"status": "done", **record, "events": [brief(e) for e in events]}
     for event in events:
-        console.say(f"  {describe(event, zone)}")
+        console.say(f"  {describe(event, zone)}", item={"kind": "event", "text": describe(event, zone)})
     if not events:
         console.say("  No matching events.")
     return {"status": "done", **record, "events": [brief(e) for e in events]}
@@ -652,7 +662,11 @@ def create_event(skill, details, confirm):
     if not confirm("Create this event", [*notes, *preview(body, zone)]):
         return {"status": "declined", **record}
     event = calendar.insert(body)
-    console.say(f"  created: {describe(event, zone)}\n  {event.get('htmlLink', '')}")
+    # The link is worth a terminal line and not a chat one: it cannot be clicked out of a monospace block.
+    console.say(
+        f"  created: {describe(event, zone)}\n  {event.get('htmlLink', '')}",
+        item={"kind": "saved", "text": f"created: {describe(event, zone)}", "link": event.get("htmlLink", "")},
+    )
     return {"status": "done", **record, "event": brief(event)}
 
 
@@ -685,7 +699,10 @@ def update_event(skill, details, confirm):
     if not confirm(f"Update “{event.get('summary') or '(no title)'}”", lines):
         return {"status": "declined", **record}
     updated = calendar.patch(event["id"], body)
-    console.say(f"  updated: {describe(updated, zone)}")
+    console.say(
+        f"  updated: {describe(updated, zone)}",
+        item={"kind": "saved", "text": f"updated: {describe(updated, zone)}"},
+    )
     return {"status": "done", **record, "updated": brief(updated)}
 
 

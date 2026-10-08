@@ -12,6 +12,7 @@ import queue
 import re
 import threading
 import time
+from datetime import datetime
 
 import httpx
 
@@ -36,9 +37,208 @@ def log(text):
     print(f"{time.strftime('%H:%M:%S')}  telegram: {text}", flush=True)
 
 
-def block(text):
-    """A run's output, kept monospace: jev lines up columns with spaces, which Telegram otherwise collapses."""
-    return f"<pre>{html.escape(text)}</pre>"
+def esc(text):
+    return html.escape(str(text))
+
+
+def money(value):
+    return f"{value:,.2f}"
+
+
+def signed(value):
+    return f"{value:+,.2f}"
+
+
+def mood(value):
+    return "🟢" if value > 0 else "🔴" if value < 0 else "⚪"
+
+
+def day(stamp):
+    """A date as a chat would write it — 1 Oct — from either a date or a timestamp."""
+    try:
+        when = datetime.strptime(str(stamp)[:10], "%Y-%m-%d")
+    except ValueError:
+        return esc(stamp)
+    return f"{when.day} {when:%b}"
+
+
+def plainly(status):
+    """An API's shouting, in words: FILLED_ALL reads as filled."""
+    return {"FILLED_ALL": "filled", "FILLED_PART": "part filled", "SUBMITTED": "open", "WAITING_SUBMIT": "queued"}.get(
+        status, str(status).replace("_", " ").lower()
+    )
+
+
+class View:
+    """How one run reads as a chat message.
+
+    jev's own lines are built for a terminal: columns that line up only in monospace, and the odds, latencies and
+    element indices that explain how it decided. A chat wants sentences and bold text and none of the bookkeeping,
+    so a line that carries an `item` is rendered here or left out entirely, while a line that carries none is
+    already a plain sentence and is shown as it is. The trace goes last in fine print, so a message still says which
+    run it came from.
+
+    A skill whose output has a shape of its own subclasses this and renders the items it emits; VIEWS maps it to its
+    leaf or its branch. Rendering nothing is always a valid answer, and is what keeps a terminal's bookkeeping out
+    of a chat without anything having to list it.
+    """
+
+    title = "jev"
+
+    def __init__(self):
+        self.parts = []
+        self.trace = None
+
+    def take(self, text, item):
+        if item is None:
+            if stripped := text.strip():
+                self.parts.append(esc(stripped))
+        elif (rendered := self.render(item)) is not None:
+            self.parts.append(rendered)
+
+    def render(self, item):
+        """One item as chat HTML, or None to leave it out."""
+        kind = item.get("kind")
+        if kind == "trace":
+            self.trace = item["path"]
+        elif kind == "skill":
+            return f"<b>{esc(self.title)}</b>"
+        elif kind in {"note", "assumed"}:
+            return f"<i>{esc(item['text'])}</i>"
+        elif kind == "answer":
+            return f"\n💬 {esc(item['text'])}" if item.get("ok") else f"\n<i>{esc(item['text'])}</i>"
+        elif kind == "continuing":
+            return f"<i>continuing — you were asked: {esc(item['question'])}</i>"
+        elif kind == "outcome":
+            # A chat shows the result, not the status: only a run that did not simply succeed needs a word.
+            return None if item["status"] == "done" else f"⚠️ {esc(item['text'])}"
+        return None
+
+    def html(self):
+        body = "\n".join(self.parts).strip()
+        if self.trace:
+            body += f"\n\n<i>{esc(self.trace)}</i>"
+        return body.strip()
+
+
+class Holdings(View):
+    title = "Holdings"
+
+    def render(self, item):
+        kind = item.get("kind")
+        if kind == "account":
+            return f"<i>{esc(item['env'].lower())} account …{esc(str(item['card'] or item['id'])[-4:])}</i>"
+        if kind == "funds":
+            return (
+                f"\nTotal <b>{money(item['total'])} {esc(item['currency'])}</b>"
+                f"\nPositions {money(item['value'])} · Cash {money(item['cash'])}"
+            )
+        if kind == "holding":
+            return (
+                f"\n{mood(item['unrealized'])} <b>{esc(item['code'])}</b> · {esc(item['name'])}"
+                f"\n{item['quantity']:,.0f} @ {money(item['cost'])} → {money(item['price'])}"
+                f"\n<b>{money(item['value'])}</b> · {signed(item['unrealized'])} ({item['percent']:+.1f}%)"
+            )
+        if kind == "subtotal":
+            return (
+                f"\n{esc(item['currency'])} positions <b>{money(item['value'])}</b>"
+                f" · {signed(item['unrealized'])}"
+            )
+        return super().render(item)
+
+
+class Position(View):
+    title = "Holding"
+
+    def render(self, item):
+        if item.get("kind") == "holding":
+            return (
+                f"\n<b>{esc(item['code'])}</b> · {esc(item['name'])}"
+                f"\n\nQuantity {item['quantity']:,.0f} ({item['sellable']:,.0f} sellable)"
+                f"\nAverage cost {money(item['cost'])}"
+                f"\nPrice {money(item['price'])}"
+                f"\nValue <b>{money(item['value'])} {esc(item['currency'])}</b>"
+                f"\nUnrealised <b>{signed(item['unrealized'])} ({item['percent']:+.1f}%)</b>"
+                f"\nRealised {signed(item['realized'])} · Today {signed(item['today'])}"
+            )
+        if item.get("kind") == "account":
+            return None  # the holding is the subject here, not the account it sits in
+        return super().render(item)
+
+
+class Activity(View):
+    title = "Activity"
+
+    def render(self, item):
+        kind = item.get("kind")
+        if kind == "range":
+            return f"<i>{day(item['from'])} – {day(item['to'])}</i>"
+        if kind == "count":
+            return f"\n<b>{item['count']} {esc(item['what'])}</b>" if item["count"] else f"\nNo {esc(item['what'])}."
+        if kind in {"fill", "order"}:
+            status = f" · <i>{esc(plainly(item['status']))}</i>" if kind == "order" else ""
+            return (
+                f"• {day(item['when'])} · {esc(item['side'].lower())} <b>{esc(item['code'])}</b> "
+                f"{item['quantity']:,.0f} @ {money(item['price'])}{status}"
+            )
+        return super().render(item)
+
+
+class Accounts(View):
+    title = "Accounts"
+
+    def render(self, item):
+        if item.get("kind") == "account":
+            card = f" · card …{esc(str(item['card'])[-4:])}" if item.get("card") not in (None, "", "N/A") else ""
+            return (
+                f"\n<code>{esc(item['id'])}</code>"
+                f"\n{esc(item['env'].lower())} · {esc(item['type'].lower())} · {esc(item['firm'])}{card}"
+            )
+        return super().render(item)
+
+
+class Events(View):
+    title = "Calendar"
+
+    def render(self, item):
+        kind = item.get("kind")
+        if kind == "event":
+            return f"• {esc(item['text'])}"
+        if kind == "calendar":
+            star = "★ " if item.get("primary") else ""
+            return f"\n{star}<b>{esc(item['summary'])}</b>\n<code>{esc(item['id'])}</code> · {esc(item['zone'])}"
+        if kind == "saved":
+            return f"✅ {esc(item['text'])}"
+        return super().render(item)
+
+
+class Messages(View):
+    title = "LinkedIn"
+
+    def render(self, item):
+        if item.get("kind") == "entry":
+            when = f" · <i>{esc(item['when'])}</i>" if item.get("when") else ""
+            text = f"\n{esc(item['text'])}" if item.get("text") else ""
+            return f"\n<b>{esc(item['name'])}</b>{when}{text}"
+        return super().render(item)
+
+
+# A leaf's own view, else its branch's, else the plain one.
+VIEWS = {
+    "moomoo/holdings": Holdings,
+    "moomoo/position": Position,
+    "moomoo/activity": Activity,
+    "moomoo/accounts": Accounts,
+    "calendar": Events,
+    "linkedin-dms": Messages,
+}
+
+
+def viewing(path):
+    for key in (path, path.split("/")[0]):
+        if key in VIEWS:
+            return VIEWS[key]()
+    return View()
 
 
 def keyboard(token):
@@ -111,21 +311,25 @@ class Api:
 
 class Pad:
     """The one Telegram message a run's output accumulates into. jev says a line per action and Telegram takes about
-    one message a second, so lines are coalesced and the same message is edited rather than sent again."""
+    one message a second, so lines are coalesced and the same message is edited rather than sent again. What that
+    message looks like is the View's business; the pad only decides when it goes out."""
 
     def __init__(self, api, chat):
         self.api, self.chat = api, chat
         self.lock = threading.Lock()
-        self.lines = []
+        self.view = View()
         self.message = None  # the message being edited, or None before the first send
         self.shown = ""  # what that message holds, so an unchanged body is never sent again
         self.written = 0.0  # when it last went out; 0 makes the run's first line immediate
         self.timer = None
 
-    def say(self, text):
+    def say(self, text, item=None):
         """Keep a line. It goes out now if the last write is old enough, and otherwise one timer carries it."""
         with self.lock:
-            self.lines.append(text)
+            if item is not None and item.get("kind") == "skill":
+                # Which skill is running decides how the rest of the run reads.
+                self.view = viewing(item["path"])
+            self.view.take(text, item)
             due = time.monotonic() - self.written >= EDIT_INTERVAL
             self.disarm()
             if not due:
@@ -142,30 +346,30 @@ class Pad:
             self.timer = None
 
     def flush(self):
-        """Show what has been said. A failed call keeps the lines for the next try, so output is delayed, not lost."""
+        """Show what has been said. A failed call keeps it for the next try, so output is delayed, not lost."""
         with self.lock:
             self.disarm()
-            body = "\n".join(self.lines)
-            if not self.lines or body == self.shown:
+            body = self.view.html()
+            if not body or body == self.shown:
                 return
             try:
                 if self.message is None:
-                    self.message = self.api.send(self.chat, block(body))
+                    self.message = self.api.send(self.chat, body)
                 else:
-                    self.api.edit(self.chat, self.message, block(body))
+                    self.api.edit(self.chat, self.message, body)
             except Busy as why:
                 log(str(why))
                 return
             self.shown, self.written = body, time.monotonic()
             if len(body) > LENGTH:
                 # Over the message cap: this one is finished, and the rest of the run goes to a new message.
-                self.lines, self.message, self.shown = [], None, ""
+                self.view.parts, self.message, self.shown = [], None, ""
 
     def close(self):
         self.flush()
         with self.lock:
             if self.message is None:  # Telegram rejects an empty message, and a silent run still deserves a reply
-                self.lines = ["the run said nothing."]
+                self.view.parts.append("the run said nothing.")
         self.flush()
 
 
@@ -186,7 +390,7 @@ class Chat:
     def tell(self, text):
         """A line of the bot's own, outside any run's output."""
         try:
-            self.api.send(self.chat, html.escape(text))
+            self.api.send(self.chat, esc(text))
         except Busy as why:
             log(str(why))
 
@@ -203,7 +407,12 @@ class Chat:
 
     def dispatch(self, stream):
         self.stream = stream
-        return client.relay(stream, self.pad.say, self.ask, self.send)
+        return client.relay(stream, self.write, self.ask, self.send)
+
+    def write(self, text, item=None):
+        """One line into the pad, with whatever the run said it was about. Laying it out happens here and nowhere
+        else: the terminal's columns are built for a terminal."""
+        self.pad.say(text, item)
 
     def send(self, stream, message):
         """Serialized: a cancel comes from the polling thread while the relay thread may be sending an answer."""
@@ -216,7 +425,7 @@ class Chat:
         self.token += 1
         question = GATE.sub("", prompt).strip()
         try:
-            self.asked = (self.api.send(self.chat, html.escape(question), keyboard(self.token)), question)
+            self.asked = (self.api.send(self.chat, f"<b>{esc(question)}</b>", keyboard(self.token)), question)
         except Busy as why:  # no keyboard reached the chat, so nobody can approve: a no changes nothing
             log(str(why))
             return False
@@ -235,7 +444,7 @@ class Chat:
             return
         (message, question), self.asked = self.asked, None
         try:
-            self.api.edit(self.chat, message, f"{html.escape(question)} — <b>{'Yes' if answer else 'No'}</b>")
+            self.api.edit(self.chat, message, f"{esc(question)} — <b>{'Yes' if answer else 'No'}</b>")
         except Busy as why:
             log(str(why))
 

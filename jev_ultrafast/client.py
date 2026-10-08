@@ -114,8 +114,8 @@ def terminal(stream, interactive):
     keeps nothing across iterations, so re-entering it after an interrupt resumes the same stream."""
     cancelling = False
 
-    def say(text):
-        print(text, flush=True)
+    def say(text, item=None):
+        print(text, flush=True)  # this is the terminal; what the line is about is for a front end that lays out
 
     def ask(prompt):
         return interactive and input(prompt).strip().lower() in {"y", "yes"}
@@ -143,7 +143,7 @@ def relay(stream, say, ask, send=server.send):
         message = json.loads(line)
         kind = message.get("type")
         if kind == "say":
-            say(message["text"])
+            say(message["text"], message.get("item"))
         elif kind == "queued":
             ahead = message["ahead"]
             say(f"  queued behind {ahead} request{'s' if ahead > 1 else ''}")

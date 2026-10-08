@@ -403,35 +403,61 @@ def answer(skill, details, funds, positions):
     return text.strip(), info
 
 
+def about(account):
+    """One account as plain data, for a front end that lays out its own messages."""
+    return {
+        "kind": "account",
+        "id": account["acc_id"],
+        "env": account["trd_env"],
+        "type": account["acc_type"],
+        "firm": account["security_firm"],
+        "card": account["uni_card_num"],
+    }
+
+
 def show_funds(funds):
     if not funds:
         return
     console.say(
         f"  {funds['currency']}  total {funds['total']:,.2f}   positions {funds['value']:,.2f}   "
-        f"cash {funds['cash']:,.2f}   available {funds['available']:,.2f}   risk {funds['risk']}"
+        f"cash {funds['cash']:,.2f}   available {funds['available']:,.2f}   risk {funds['risk']}",
+        item={"kind": "funds", **funds},
     )
 
 
 def show(positions):
-    """The holdings table. Every amount is that position's own currency, so a mixed account gets a block each."""
+    """The holdings table. Every amount is that position's own currency, so a mixed account gets a block each.
+
+    Each line also says what it is about, so a front end that is not a terminal can lay the same numbers out its own
+    way rather than printing columns that only line up in monospace."""
     groups = by_currency(positions)
     for currency, held in groups.items():
         console.say(
             f"\n  {currency:<6}{'code':<11}{'name':<17}{'qty':>8}{'cost':>11}{'price':>11}"
-            f"{'value':>13}{'P/L':>12}{'P/L %':>9}"
+            f"{'value':>13}{'P/L':>12}{'P/L %':>9}",
+            # A column header belongs to columns: nothing outside a terminal has any use for it.
+            item={"kind": "columns", "currency": currency},
         )
         for p in sorted(held, key=lambda p: p["value"], reverse=True):
             console.say(
                 f"  {'':<6}{p['code']:<11}{p['name'][:16]:<17}{p['quantity']:>8,.0f}{p['cost']:>11,.2f}"
-                f"{p['price']:>11,.2f}{p['value']:>13,.2f}{p['unrealized']:>+12,.2f}{p['percent']:>8,.2f}%"
+                f"{p['price']:>11,.2f}{p['value']:>13,.2f}{p['unrealized']:>+12,.2f}{p['percent']:>8,.2f}%",
+                item={"kind": "holding", **p},
             )
         # A subtotal is only ever within one currency; the account's own total is in the funds line above.
         console.say(
             f"  {'':<6}{'subtotal':<11}{'':<17}{'':>8}{'':>11}{'':>11}"
-            f"{sum(p['value'] for p in held):>13,.2f}{sum(p['unrealized'] for p in held):>+12,.2f}"
+            f"{sum(p['value'] for p in held):>13,.2f}{sum(p['unrealized'] for p in held):>+12,.2f}",
+            item={
+                "kind": "subtotal",
+                "currency": currency,
+                "value": sum(p["value"] for p in held),
+                "unrealized": sum(p["unrealized"] for p in held),
+            },
         )
     if len(groups) > 1:
-        console.say("\n  (subtotals are per currency; the account total above is the one converted figure)")
+        note = "(subtotals are per currency; the account total above is the one converted figure)"
+        console.say(f"\n  {note}", item={"kind": "note", "text": note})
 
 
 def holdings(skill, details, confirm):
@@ -450,7 +476,10 @@ def holdings(skill, details, confirm):
         "judgments": [judged] if judged else [],
         "answer_needed": round(needed, 3),
     }
-    console.say(f"  account {account['acc_id']} ({account['trd_env']}, {account['security_firm']})")
+    console.say(
+        f"  account {account['acc_id']} ({account['trd_env']}, {account['security_firm']})",
+        item=about(account),
+    )
     show_funds(funds)
     if not positions:
         console.say("  No positions held.")
@@ -462,11 +491,8 @@ def holdings(skill, details, confirm):
             record["answer"] = {"text": text, "model_call": info}
         except (ValueError, RuntimeError) as error:
             text, record["answer"] = None, {"error": str(error)}
-        console.say(
-            f"  → {text}"
-            if text
-            else f"  no answer: {record['answer'].get('error', 'the holdings could not answer it')}"
-        )
+        said = text or f"no answer: {record['answer'].get('error', 'the holdings could not answer it')}"
+        console.say(f"  {'→ ' if text else ''}{said}", item={"kind": "answer", "text": said, "ok": bool(text)})
     show(positions)
     return {"status": "done", **record}
 
@@ -505,16 +531,27 @@ def position(skill, details, confirm):
         options = " or ".join(f"{criteria[k]['code']} ({criteria[k]['name']})" for k in likely)
         raise Unanswered(f"Not sure which holding you mean: {options}. Say which one.")
     held = positions[int(choice) - 1]
-    console.say(f"  account {account['acc_id']} ({account['trd_env']}, {account['security_firm']})  match: "
-                f"{probabilities[choice]:.0%}")
-    console.say(f"\n  {held['code']}  {held['name']}  ({held['currency']})")
-    console.say(f"    quantity   {held['quantity']:,.0f}   ({held['sellable']:,.0f} sellable)")
-    console.say(f"    cost       {held['cost']:,.2f}   average cost, as the app shows it")
-    console.say(f"    price      {held['price']:,.2f}")
-    console.say(f"    value      {held['value']:,.2f}")
-    console.say(f"    unrealized {held['unrealized']:+,.2f}   ({held['percent']:+,.2f}%)")
-    console.say(f"    realized   {held['realized']:+,.2f}")
-    console.say(f"    today      {held['today']:+,.2f}")
+    console.say(
+        f"  account {account['acc_id']} ({account['trd_env']}, {account['security_firm']})  match: "
+        f"{probabilities[choice]:.0%}",
+        item=about(account),
+    )
+    console.say(
+        f"\n  {held['code']}  {held['name']}  ({held['currency']})",
+        item={"kind": "holding", **held},
+    )
+    # The holding above is the whole subject, so these labelled lines are the terminal's way of laying it out:
+    # tagged as such, and left out by anything that lays out its own.
+    for label, value, note in (
+        ("quantity", f"{held['quantity']:,.0f}", f"({held['sellable']:,.0f} sellable)"),
+        ("cost", f"{held['cost']:,.2f}", "average cost, as the app shows it"),
+        ("price", f"{held['price']:,.2f}", ""),
+        ("value", f"{held['value']:,.2f}", ""),
+        ("unrealized", f"{held['unrealized']:+,.2f}", f"({held['percent']:+,.1f}%)"),
+        ("realized", f"{held['realized']:+,.2f}", ""),
+        ("today", f"{held['today']:+,.2f}", ""),
+    ):
+        console.say(f"    {label:<11}{value}" + (f"   {note}" if note else ""), item={"kind": "columns"})
     return {"status": "done", **record, "holding": held, "match": round(probabilities[choice], 3)}
 
 
@@ -595,21 +632,37 @@ def activity(skill, details, confirm):
         "fills": fills,
         "orders": orders,
     }
-    console.say(f"  account {account['acc_id']}  {start} to {end}")
+    console.say(
+        f"  account {account['acc_id']}  {start} to {end}",
+        item={"kind": "range", "from": start, "to": end, "account": account["acc_id"]},
+    )
     if default:
         # Said out loud, and offered back: the next request may replace this window instead of starting over.
         record["assumed"] = (
             f"No start date was given, so I read the last month, {start} to {end}. Say another range to change it."
         )
-        console.say("  (no start date given, so the last month above; say another range to change it)")
-    console.say(f"\n  {len(fills)} fill(s)" + (f", showing {limit}" if len(fills) > limit else ""))
+        console.say(
+            "  (no start date given, so the last month above; say another range to change it)",
+            item={"kind": "assumed", "text": "No start date given, so the last month. Say another range to change it."},
+        )
+    console.say(
+        f"\n  {len(fills)} fill(s)" + (f", showing {limit}" if len(fills) > limit else ""),
+        item={"kind": "count", "what": "fills", "count": len(fills)},
+    )
     for f in fills[:limit]:
-        console.say(f"    {f['when'][:16]:<17}{f['side']:<5}{f['code']:<11}{f['quantity']:>8,.0f} @ {f['price']:,.2f}")
-    console.say(f"\n  {len(orders)} order(s)" + (f", showing {limit}" if len(orders) > limit else ""))
+        console.say(
+            f"    {f['when'][:16]:<17}{f['side']:<5}{f['code']:<11}{f['quantity']:>8,.0f} @ {f['price']:,.2f}",
+            item={"kind": "fill", **f},
+        )
+    console.say(
+        f"\n  {len(orders)} order(s)" + (f", showing {limit}" if len(orders) > limit else ""),
+        item={"kind": "count", "what": "orders", "count": len(orders)},
+    )
     for o in orders[:limit]:
         console.say(
             f"    {o['when'][:16]:<17}{o['side']:<5}{o['code']:<11}{o['quantity']:>8,.0f} @ {o['price']:,.2f}  "
-            f"{o['status']}"
+            f"{o['status']}",
+            item={"kind": "order", **o},
         )
     if not fills and not orders:
         console.say("  Nothing in that range.")
@@ -624,7 +677,8 @@ def accounts(skill, details, confirm):
         console.say(
             f"  {account['acc_id']:<20}{account['trd_env']:<10}{account['acc_type']:<18}"
             f"{account['security_firm']:<16}card {account['uni_card_num']:<18}"
-            f"{','.join(account['trdmarket_auth'])}"
+            f"{','.join(account['trdmarket_auth'])}",
+            item=about(account),
         )
     if not found:
         console.say("  OpenD shows no accounts.")

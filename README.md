@@ -200,7 +200,8 @@ jev   Update “Dentist”?            [ Yes ]  [ No ]
 ```
 
 A run's lines are coalesced into one message that is edited as it goes, since Telegram takes about one message a
-second; it is sent as a monospace block so jev's columns stay aligned on a phone. `/help` lists the skill tree,
+second, and that message is laid out for a chat rather than printed as a terminal's columns — see
+[What a chat is shown](#what-a-chat-is-shown). `/help` lists the skill tree,
 `/cancel` stops a run at its next safe point, and `/start` says what to type. A second message while a run is going
 is refused rather than queued; a request from another allowed chat queues on the server and says `queued behind 1
 request`.
@@ -209,21 +210,68 @@ Browser skills always run **in the background** from a chat: nobody is watching 
 would steal focus on your desktop. So a skill you mean to drive from chat wants `report = true`, or the chat sees
 only the action lines and `DONE`.
 
-Before you rely on it:
+### What a chat is shown
 
-- **Anyone in `telegram_allowed` can drive your logged-in Chrome and your calendar.** The default is empty, meaning
-  nobody, and the bot refuses to start until you set it. An id that is not on the list runs nothing and gets no
-  reply at all — only a log line naming the id.
-- **Private chats only.** A group is refused even from an allowed id, because the output would go to everyone in it.
-  Turn group invitations off with BotFather's `/setjoingroups`, and leave `/setprivacy` enabled.
-- **Do the first Chrome approval and the first Google sign-in at the keyboard.** Chrome's "Allow remote debugging?"
-  prompt and Google's consent page cannot be clicked from a phone; over Telegram they just time out.
-- **Raise `run_timeout_seconds` if you answer from a phone.** A run's budget starts when it does, not when it asks,
-  so a confirmation left for a few minutes can hit the clock. A calendar change you approve still goes ahead; a
-  browser run stops at its next safe point.
-- **Restart the bot after changing jev.** A code change retires the *server*, which the bot restarts automatically,
-  but the bot process keeps running the code it started with. Settings, including the allowlist, are read once too.
-- The token is a credential: `.env` only, and it is git-ignored.
+A terminal and a chat want different things. jev's lines are built for a terminal: columns that line up only in
+monospace, and the odds, latencies and element indices that say how it decided. A chat wants sentences and bold text,
+and wants none of the bookkeeping.
+
+So every line a run says can also say **what it is about**, as plain data:
+
+```python
+console.say(f"  {code:<11}{value:>13,.2f}{percent:>8,.2f}%", item={"kind": "holding", **position})
+```
+
+A terminal ignores the second half and prints its columns. The Telegram client renders the item instead, through a
+view of its own:
+
+```text
+Holdings
+real account …8385
+
+Total 6,737.54 USD
+Positions 5,460.74 · Cash 1,274.91
+
+💬 Your portfolio is up $1,158.28 USD, with NuScale Power the only significant loser at -30%.
+
+🟢 US.NVDA · NVIDIA
+9 @ 193.60 → 236.52
+2,128.68 · +386.29 (+22.2%)
+
+🔴 US.SMR · NuScale Power
+12 @ 10.88 → 7.59
+91.07 · -39.52 (-30.3%)
+
+USD positions 5,461.32 · +1,156.98
+
+artifacts/runs/moomoo/holdings/20261008T091204Z.json
+```
+
+`telegram.View` is the base. It renders the kinds every skill shares — a note, a written answer, an outcome worth
+mentioning, the trace — and leaves out everything else. A skill whose output has a shape of its own subclasses it,
+and `VIEWS` maps a leaf, or failing that its branch, to one:
+
+| View | For |
+| --- | --- |
+| `Holdings` | `moomoo/holdings` |
+| `Position` | `moomoo/position` |
+| `Activity` | `moomoo/activity` |
+| `Accounts` | `moomoo/accounts` |
+| `Events` | `calendar/…` |
+| `Messages` | `linkedin-dms/…` |
+| `View` | anything else |
+
+Three rules make this hold together:
+
+- **Rendering nothing is a valid answer.** An item whose `kind` no view knows is simply left out, which is how
+  `route:`, every action a browser run took and every probability stay out of a chat without anything having to list
+  them. The run's own bookkeeping is tagged (`route`, `step`, `columns`) and falls through.
+- **A line with no item is already a sentence** — `deleted.`, `No positions held.`, a confirmation's preview — and is
+  shown as it is.
+- **The trace goes last, in fine print**, so a message still says which run it came from.
+
+An item never replaces the terminal's line; it accompanies one. So a skill saying what its output is about cannot
+change what the terminal prints, which is the one thing a test asserts directly.
 
 ## The skill tree
 
@@ -422,9 +470,11 @@ The DOM reader handles common HTML and ARIA controls. Shadow roots, iframes, can
   leaves it in place, so it can still be offered to the request after that. The routing heads already say the
   request went elsewhere; acting on that is the missing half. See
   [Answering a question jev asked](#answering-a-question-jev-asked).
-- **Telegram: cosmetic structuring.** A run's lines are coalesced into one monospace block, which keeps jev's columns
-  aligned but assumes a terminal's width. The holdings table is about 90 columns and wraps badly on a phone. Chat
-  output wants its own narrower shape, not the terminal's.
+- **Items for the confirmation previews.** The lines a confirmation shows before a Yes/No reach a chat as plain
+  sentences, which reads well enough but is the one place a chat still sees the terminal's own wording. A `preview`
+  item per changed field would let [a view](#what-a-chat-is-shown) lay out a change the way it lays out a holding.
+- **A long list could collapse.** Telegram has `<blockquote expandable>`; a portfolio of fifty positions would read
+  better behind one than as fifty lines.
 
 ## Development
 

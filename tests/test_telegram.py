@@ -137,7 +137,8 @@ def test_a_question_becomes_a_yes_no_keyboard_and_a_press_answers_it(home):  # n
     talking, api = bot(home, run)
     talking.accept(message("delete the dentist"))
     asked = waitfor(lambda: next(iter(api.keyboards()), None), "a keyboard")
-    assert asked["text"] == "Delete “Dentist”?"  # the terminal's [y/N] is gone; the buttons are the gate
+    # The terminal's [y/N] is gone; the buttons are the gate, and the question is the message's own line.
+    assert asked["text"] == "<b>Delete “Dentist”?</b>"
     yes, no = asked["buttons"]["inline_keyboard"][0]
     assert [yes["text"], no["text"]] == ["Yes", "No"]
     talking.accept(press(yes["callback_data"]))
@@ -240,7 +241,7 @@ def test_output_is_escaped_not_sent_as_html(home):  # noqa: F811
     settle(talking.chats[ME])
     body = api.pad()
     assert "&lt;b&gt;Tan&lt;/b&gt;" in body and "&amp; co" in body
-    assert body.startswith("<pre>") and body.endswith("</pre>")  # jev's columns stay aligned
+    assert "<pre>" not in body  # a chat message, not a code box
 
 
 def test_cancel_stops_the_run_at_its_next_safe_point(home):  # noqa: F811
@@ -300,3 +301,115 @@ def test_a_restart_is_relayed_once_and_the_chat_sees_why(home, monkeypatch):  # 
     settle(talking.chats[ME])
     body = api.pad()
     assert "starting a fresh one" in body and "hi" in body
+
+
+# --- what a chat is shown ---------------------------------------------------------------------------------------
+
+HOLDING = {
+    "kind": "holding", "code": "US.NVDA", "name": "NVIDIA", "currency": "USD", "quantity": 9.0, "sellable": 9.0,
+    "cost": 193.6, "price": 238.91, "value": 2150.18, "unrealized": 410.67, "percent": 23.57,
+    "realized": 2.87, "today": -0.1,
+}
+
+
+def test_a_chat_is_shown_the_item_not_the_terminals_columns(home):  # noqa: F811
+    def run(argv):
+        console.say("moomoo/holdings → moomoo.holdings", item={"kind": "skill", "path": "moomoo/holdings"})
+        console.say("  US.NVDA  NVIDIA  9  193.60  238.91  2,150.18  +410.67  23.57%", item=HOLDING)
+        return 0
+
+    talking, api = bot(home, run)
+    talking.accept(message("what do I hold"))
+    settle(talking.chats[ME])
+    body = api.pad()
+    assert "<b>Holdings</b>" in body and "<b>US.NVDA</b>" in body and "NVIDIA" in body
+    assert "+410.67 (+23.6%)" in body and "🟢" in body
+    # None of the terminal's spacing survives, and nothing is a code box.
+    assert "193.60 → 238.91" in body and "  193.60  238.91" not in body and "<pre>" not in body
+
+
+def test_a_chat_is_not_shown_how_the_run_decided(home):  # noqa: F811
+    """Routing odds, the leaf it picked and each action it took are how a run got there, not what it found."""
+
+    def run(argv):
+        console.say("route: moomoo/holdings  (100%, 300 ms)", item={"kind": "route", "skill": "moomoo/holdings"})
+        console.say("moomoo/holdings → moomoo.holdings", item={"kind": "skill", "path": "moomoo/holdings"})
+        console.say("  1530 ms  CLICK [9] Send  97%", item={"kind": "step", "operation": "CLICK"})
+        console.say("  USD  total 10.00  risk LEVEL3", item={"kind": "funds", "currency": "USD", "total": 10.0,
+                                                             "value": 4.0, "cash": 6.0, "risk": "LEVEL3"})
+        console.say("  done", item={"kind": "outcome", "status": "done", "text": "done"})
+        return 0
+
+    talking, api = bot(home, run)
+    talking.accept(message("what do I hold"))
+    settle(talking.chats[ME])
+    body = api.pad()
+    assert "100%" not in body and "300 ms" not in body and "CLICK" not in body and "97%" not in body
+    assert "1530" not in body and "route:" not in body
+    assert "<b>10.00 USD</b>" in body  # what it found is there
+
+
+def test_the_trace_is_fine_print_at_the_foot_of_the_message(home):  # noqa: F811
+    def run(argv):
+        console.say("moomoo/holdings → moomoo.holdings", item={"kind": "skill", "path": "moomoo/holdings"})
+        console.say("  US.NVDA …", item=HOLDING)
+        console.say("  trace: artifacts/runs/moomoo/holdings/20261008T080351Z.json",
+                    item={"kind": "trace", "path": "artifacts/runs/moomoo/holdings/20261008T080351Z.json"})
+        return 0
+
+    talking, api = bot(home, run)
+    talking.accept(message("what do I hold"))
+    settle(talking.chats[ME])
+    body = api.pad()
+    assert body.endswith("<i>artifacts/runs/moomoo/holdings/20261008T080351Z.json</i>")
+    assert body.index("US.NVDA") < body.index("<i>artifacts")
+
+
+def test_a_line_with_no_item_reaches_a_chat_as_a_sentence(home):  # noqa: F811
+    def run(argv):
+        console.say("  deleted.")
+        return 0
+
+    talking, api = bot(home, run)
+    talking.accept(message("delete the dentist"))
+    settle(talking.chats[ME])
+    assert api.pad() == "deleted."
+
+
+def test_an_item_no_view_knows_is_left_out(home):  # noqa: F811
+    """Rendering nothing is a valid answer, which is how a terminal's bookkeeping stays out without a list of it."""
+
+    def run(argv):
+        console.say("  some column header", item={"kind": "columns"})
+        console.say("  something to say")
+        return 0
+
+    talking, api = bot(home, run)
+    talking.accept(message("hello"))
+    settle(talking.chats[ME])
+    assert api.pad() == "something to say"
+
+
+def test_a_terminal_console_ignores_the_item(capsys):
+    """The guarantee the whole arrangement rests on: describing a line is additional, so a skill saying what its
+    line is about can never change what the terminal prints."""
+    wide = "  US.NVDA    NVIDIA     9   193.60   238.91   2,150.18   +410.67   23.57%"
+    console.Console().say(wide, item=HOLDING)
+    assert capsys.readouterr().out == wide + "\n"
+
+
+@pytest.mark.parametrize(
+    "path, title",
+    [
+        ("moomoo/holdings", telegram.Holdings),
+        ("moomoo/position", telegram.Position),
+        ("moomoo/activity", telegram.Activity),
+        ("moomoo/accounts", telegram.Accounts),
+        ("calendar/find-events", telegram.Events),
+        ("calendar/browser/create-event", telegram.Events),
+        ("linkedin-dms/check", telegram.Messages),
+        ("something/new", telegram.View),
+    ],
+)
+def test_a_leaf_gets_its_own_view_then_its_branchs_then_the_plain_one(path, title):
+    assert type(telegram.viewing(path)) is title

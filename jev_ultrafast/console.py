@@ -29,7 +29,8 @@ class Console:
     def interactive(self):
         return sys.stdin.isatty()
 
-    def say(self, text=""):
+    def say(self, text="", item=None):
+        # A terminal is what these columns were built for, so what the line is about adds nothing here.
         print(text, flush=True)
 
     def ask(self, prompt):
@@ -54,8 +55,11 @@ def current():
     return CURRENT.get()
 
 
-def say(text=""):
-    current().say(text)
+def say(text="", item=None):
+    """Say one line. `item` is what that line is about, as plain data — `{"kind": …}` — for a front end that lays
+    out its own messages instead of printing a terminal's columns. A terminal ignores it, so describing a line can
+    never change what a terminal shows, and a front end that does not know a kind simply leaves it out."""
+    current().say(text, item)
 
 
 def ask(prompt):

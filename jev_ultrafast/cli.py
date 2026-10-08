@@ -126,14 +126,21 @@ def pick(request):
     path, route = router.route(request, pending=slot)
     if slot and route.get("follow_up", 0) >= SURE:
         details = memory.merge(slot, request)
-        console.say(f"continuing {slot['skill']}, which asked: {slot['question']}")
-        console.say(f"  request: {details.replace(chr(10), '  ·  ')}")
+        console.say(
+            f"continuing {slot['skill']}, which asked: {slot['question']}",
+            item={"kind": "continuing", "skill": slot["skill"], "question": slot["question"]},
+        )
+        console.say(f"  request: {details.replace(chr(10), '  ·  ')}", item={"kind": "columns"})
         return skills.load(slot["skill"]), {**route, "continued": slot}, details
     if path is None:
-        console.say(f"route: no skill fits ({route['use_case_probability']:.0%} sure). `jev --list` shows what exists.")
+        console.say(
+            f"route: no skill fits ({route['use_case_probability']:.0%} sure). `jev --list` shows what exists.",
+            item={"kind": "note", "text": "No skill fits this. /help lists the skills."},
+        )
         return None, route, request
     sure = route["use_case_probability"] * route["skill_probability"]
-    console.say(f"route: {path}  ({sure:.0%}, {route['latency_ms']} ms)")
+    # Which leaf, and how sure, is how a run was decided; a chat is shown what the run then found.
+    console.say(f"route: {path}  ({sure:.0%}, {route['latency_ms']} ms)", item={"kind": "route", "skill": path})
     if sure < SURE and not console.ask(f"  Not sure that's right. Run {path}? [y/N] "):
         console.say("  nothing ran.")
         return None, route, request
@@ -152,21 +159,24 @@ def make_report(goal, skill, state):
 
 def print_report(report, mode):
     if "error" in report:
-        console.say(f"  no report: {report['error']}")
+        console.say(f"  no report: {report['error']}", item={"kind": "note", "text": f"no report: {report['error']}"})
         return
     for entry in report["entries"]:
-        console.say(f"  {entry['name']:<28} {entry['when'] or '':<10} {entry['text'] or ''}")
+        console.say(
+            f"  {entry['name']:<28} {entry['when'] or '':<10} {entry['text'] or ''}",
+            item={"kind": "entry", **entry},
+        )
     left_out = len(report["dropped"])
     if not report["entries"]:
         why = report["missing"] or "the page showed none of what you asked for."
         if left_out:
             why = f"{left_out} entries could not be copied exactly from the page."
-        console.say(f"  Nothing to report: {why}")
+        console.say(f"  Nothing to report: {why}", item={"kind": "note", "text": f"Nothing to report: {why}"})
     elif left_out:
-        console.say(f"  ({left_out} entries had values left out: not found word for word on the page)")
-    console.say(
-        f"  (what the page showed when the run finished{'; the trace has the full text' if mode == 'full' else ''})"
-    )
+        note = f"({left_out} entries had values left out: not found word for word on the page)"
+        console.say(f"  {note}", item={"kind": "note", "text": note})
+    ending = f"(what the page showed when the run finished{'; the trace has the full text' if mode == 'full' else ''})"
+    console.say(f"  {ending}", item={"kind": "columns"})
 
 
 def run_browser(skill, details, close=None, route=None, background=None, trace=None):
@@ -177,7 +187,11 @@ def run_browser(skill, details, close=None, route=None, background=None, trace=N
     # --no-close says otherwise. A one-off run has no next request, and an unseen tab is clutter, so it closes it.
     tabs = browser.TABS if background and close is None else None
     close = background if close is None else close
-    console.say(f"{skill.path} → {skill.url}{'  (background tab)' if background else ''}")
+    console.say(
+        f"{skill.path} → {skill.url}{'  (background tab)' if background else ''}",
+        # Which skill is running is what tells a front end how to lay the rest of the run out.
+        item={"kind": "skill", "path": skill.path, "url": skill.url},
+    )
     warm = tabs.open(skill.url) if tabs else None
     agent = Agent(
         skill.url, goal, rules=skill.rules, confirm=skill.confirm, approve=approve, background=background, browser=warm
@@ -186,7 +200,7 @@ def run_browser(skill, details, close=None, route=None, background=None, trace=N
     try:
         for state in agent.run():
             for step in state["history"][shown:]:
-                console.say(describe(step))
+                console.say(describe(step), item={"kind": "step", "operation": step["operation"]})
             shown = len(state["history"])
     except console.Stopped as stop:
         agent.state["status"] = stop.reason  # stopped between actions; the trace still gets written
@@ -211,9 +225,12 @@ def run_browser(skill, details, close=None, route=None, background=None, trace=N
         "uncertain": "UNCERTAIN: Chrome never confirmed the last action, so it may or may not have happened. "
         + ("The tab is left open in the background; look before running again." if background else "Check the tab."),
     }[state["status"]]
-    console.say(f"{state['elapsed_ms']:>6} ms  {outcome}")
+    console.say(
+        f"{state['elapsed_ms']:>6} ms  {outcome}",
+        item={"kind": "outcome", "status": state["status"], "text": outcome},
+    )
     if path:
-        console.say(f"{'':>9}  trace: {path}")
+        console.say(f"{'':>9}  trace: {path}", item={"kind": "trace", "path": str(path)})
     if report:
         print_report(report, mode)
     return exit_code(state["status"])
@@ -228,7 +245,7 @@ def run_api(skill, details, route=None, trace=None):
     operation = APIS.get(service, {}).get(name)
     if operation is None:
         raise ValueError(f"{skill.path}: unknown api {skill.api!r}")
-    console.say(f"{skill.path} → {skill.api}")
+    console.say(f"{skill.path} → {skill.api}", item={"kind": "skill", "path": skill.path, "api": skill.api})
     goal = f"{skill.task}\n{details}" if details else skill.task
     mode = trace or config.get("trace")
     carried = (route or {}).get("continued") or {}
@@ -245,7 +262,7 @@ def run_api(skill, details, route=None, trace=None):
             skill, {"route": route, "goal": goal, "status": "unanswered", "question": unanswered.question}, mode
         )
         if asked:
-            console.say(f"  trace: {asked}")
+            console.say(f"  trace: {asked}", item={"kind": "trace", "path": str(asked)})
         raise
     path = save_trace(skill, {"route": route, "goal": goal, **record}, mode)
     if assumed := record.get("assumed"):
@@ -260,7 +277,9 @@ def run_api(skill, details, route=None, trace=None):
         "timeout": f"TIMEOUT: stopped after {config.get('run_timeout_seconds')} s; nothing changed.",
         "cancelled": "CANCELLED: nothing changed.",
     }[record["status"]]
-    console.say(f"  {outcome}" + (f"\n  trace: {path}" if path else ""))
+    console.say(f"  {outcome}", item={"kind": "outcome", "status": record["status"], "text": outcome})
+    if path:
+        console.say(f"  trace: {path}", item={"kind": "trace", "path": str(path)})
     return exit_code(record["status"])
 
 
