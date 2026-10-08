@@ -20,6 +20,8 @@ DEFAULTS = {
     "server_idle_minutes": 10,
     # A run stops at its next safe point after this long; nothing already sent is interrupted.
     "run_timeout_seconds": 180,
+    # How long a question a run stopped on is kept, so the next request can be read as its answer.
+    "memory_minutes": 5,
     # How long to wait for you to click Allow on Chrome's "Allow remote debugging?" prompt.
     "approval_wait_seconds": 120,
     # Numeric Telegram ids allowed to drive jev from a chat (jev-telegram). Empty means nobody, because a chat

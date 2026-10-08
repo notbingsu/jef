@@ -6,7 +6,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import browser, config, console, gcal, moomoo, router, skills
+from . import browser, config, console, gcal, memory, moomoo, router, skills
 from .agent import Agent
 from .command import load_environment, parse
 from .model import page_report
@@ -45,6 +45,7 @@ METADATA = frozenset(
         "skill_probability",
         "answer_needed",
         "match",
+        "follow_up",
         # How long, and what it cost.
         "latency_ms",
         "elapsed_ms",
@@ -115,17 +116,28 @@ def list_skills():
 
 
 def pick(request):
-    """Route the request; returns (Skill, routing record) or (None, record) when nothing should run."""
-    path, route = router.route(request)
+    """Route the request; returns (Skill, routing record, the details to run with), or (None, record, request).
+
+    A question a run stopped on rides in the same routing request as one more head. When this request answers it, the
+    skill that asked runs again with both halves, because the answer belongs to the question rather than to whatever
+    the reply alone would route to: `within last month` on its own routes at 46%, and `make it september instead`
+    routes confidently to a calendar change."""
+    slot = memory.pending()
+    path, route = router.route(request, pending=slot)
+    if slot and route.get("follow_up", 0) >= SURE:
+        details = memory.merge(slot, request)
+        console.say(f"continuing {slot['skill']}, which asked: {slot['question']}")
+        console.say(f"  request: {details.replace(chr(10), '  ·  ')}")
+        return skills.load(slot["skill"]), {**route, "continued": slot}, details
     if path is None:
         console.say(f"route: no skill fits ({route['use_case_probability']:.0%} sure). `jev --list` shows what exists.")
-        return None, route
+        return None, route, request
     sure = route["use_case_probability"] * route["skill_probability"]
     console.say(f"route: {path}  ({sure:.0%}, {route['latency_ms']} ms)")
     if sure < SURE and not console.ask(f"  Not sure that's right. Run {path}? [y/N] "):
         console.say("  nothing ran.")
-        return None, route
-    return skills.load(path), route
+        return None, route, request
+    return skills.load(path), route, request
 
 
 def make_report(goal, skill, state):
@@ -218,12 +230,30 @@ def run_api(skill, details, route=None, trace=None):
         raise ValueError(f"{skill.path}: unknown api {skill.api!r}")
     console.say(f"{skill.path} → {skill.api}")
     goal = f"{skill.task}\n{details}" if details else skill.task
+    mode = trace or config.get("trace")
+    carried = (route or {}).get("continued") or {}
     try:
         record = operation(skill, details, confirm)
     except console.Stopped as stop:
         # Stopped only before a model call or a confirmation, so nothing was changed.
         record = {"status": stop.reason}
-    path = save_trace(skill, {"route": route, "goal": goal, **record}, trace or config.get("trace"))
+    except memory.Unanswered as unanswered:
+        # It stopped needing something only you can say. Keep the question for one follow-up, and trace the run:
+        # the case you most want a record of used to be the one case that wrote none.
+        memory.remember(skill.path, details, unanswered.question, carried.get("carries", 0) + 1)
+        asked = save_trace(
+            skill, {"route": route, "goal": goal, "status": "unanswered", "question": unanswered.question}, mode
+        )
+        if asked:
+            console.say(f"  trace: {asked}")
+        raise
+    path = save_trace(skill, {"route": route, "goal": goal, **record}, mode)
+    if assumed := record.get("assumed"):
+        # The run got through, but on something it chose for you. Offer that choice back, so the next request can
+        # replace it instead of starting over.
+        memory.remember(skill.path, details, assumed, carried.get("carries", 0) + 1)
+    elif carried:
+        memory.forget()  # the question has been answered, and this run did not ask another
     outcome = {
         "done": "done",
         "declined": "STOPPED: not confirmed; nothing changed.",
@@ -243,16 +273,17 @@ def execute(args):
             list_skills()
             return 0
         if args.skill:
-            skill, route = skills.load(args.skill), None
+            # Explicit is explicit: a named skill runs the words as given, with no pending question merged in.
+            skill, route, details = skills.load(args.skill), None, request
         else:
-            skill, route = pick(request)
+            skill, route, details = pick(request)
             if skill is None:
                 return 1
         if args.route_only:
             return 0
         if skill.api:
-            return run_api(skill, request, route, args.trace)
-        return run_browser(skill, request, args.close, route, args.background, args.trace)
+            return run_api(skill, details, route, args.trace)
+        return run_browser(skill, details, args.close, route, args.background, args.trace)
     except (ValueError, RuntimeError) as error:
         console.say(f"jev: {error}")
         return 1

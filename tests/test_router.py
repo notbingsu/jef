@@ -79,6 +79,44 @@ def test_chosen_head_must_offer_the_skill(tree, answers):
         router.route("add a note")
 
 
+PENDING = {"skill": "calendar/find", "earlier_request": "any flights this month?", "question": "which month?"}
+
+
+def test_the_follow_up_head_rides_in_the_routing_request(tree, answers):
+    sent = answers(lambda q: {
+        "use_case": choice(q["use_case"]["criteria"], "calendar"),
+        "skill_in_calendar_0": choice(q["skill_in_calendar_0"]["criteria"], "calendar/find"),
+        "follow_up": {"type": "noul", "noul": 0.88},
+    })
+    _, record = router.route("in november", pending=PENDING)
+    assert len(sent) == 1  # asking costs no extra round trip
+    assert record["follow_up"] == 0.88
+    asked = sent[0]["questions"]["follow_up"]
+    assert asked["type"] == "noul" and asked["instructions"]["asked"] == "which month?"
+    assert asked["instructions"]["earlier_request"] == "any flights this month?"
+
+
+def test_no_follow_up_head_without_a_pending_question(tree, answers):
+    sent = answers(lambda q: {
+        "use_case": choice(q["use_case"]["criteria"], "calendar"),
+        "skill_in_calendar_0": choice(q["skill_in_calendar_0"]["criteria"], "calendar/find"),
+    })
+    _, record = router.route("any flights this month?")
+    assert "follow_up" not in sent[0]["questions"] and "follow_up" not in record
+
+
+def test_a_follow_up_is_judged_even_when_routing_is_confident(tree, answers):
+    """`make it september instead` routes confidently to a calendar change, so confidence cannot be the gate."""
+    answers(lambda q: {
+        "use_case": choice(q["use_case"]["criteria"], "calendar"),
+        "skill_in_calendar_0": choice(q["skill_in_calendar_0"]["criteria"], "calendar/create"),
+        "follow_up": {"type": "noul", "noul": 0.91},
+    })
+    path, record = router.route("make it september instead", pending=PENDING)
+    assert path == "calendar/create" and record["skill_probability"] == 1.0
+    assert record["follow_up"] == 0.91  # the caller, not the router, decides which wins
+
+
 def test_missing_typesafe_key_stops_before_any_request(monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     with pytest.raises(ValueError, match="TYPESAFE_API_KEY"):
@@ -94,8 +132,11 @@ def runs(monkeypatch):
     return calls
 
 
-def routed(path, use_case=0.9, skill=0.9):
-    return lambda request: (path, {"use_case_probability": use_case, "skill_probability": skill, "latency_ms": 5})
+def routed(path, use_case=0.9, skill=0.9, follow_up=None):
+    record = {"use_case_probability": use_case, "skill_probability": skill, "latency_ms": 5}
+    if follow_up is not None:
+        record["follow_up"] = follow_up
+    return lambda request, root=None, pending=None: (path, record)
 
 
 def test_request_runs_the_routed_skill_with_the_whole_request(tree, runs, monkeypatch):

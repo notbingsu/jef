@@ -1,5 +1,6 @@
 """moomoo API skills. Offline: a fake OpenD, scripted TypeSafe and text-model answers; no gateway, no paid calls."""
 
+from datetime import date
 from pathlib import Path
 
 import pandas
@@ -281,16 +282,42 @@ def test_an_empty_account_has_no_position_to_show(run):
 
 # --- activity --------------------------------------------------------------------------------------------------
 
-def test_an_open_range_covers_the_last_week(run):
+def test_a_request_with_no_range_reads_the_last_month_and_says_so(run, capsys):
     record, _, _, _ = run("activity", answers=[{"start": None, "end": None, "missing": None}])
     start, end = record["searched"]["from"], record["searched"]["to"]
-    assert moomoo.DAY.fullmatch(start) and moomoo.DAY.fullmatch(end) and start < end
+    assert moomoo.DAY.fullmatch(start) and moomoo.DAY.fullmatch(end)
+    assert (date.fromisoformat(end) - date.fromisoformat(start)).days == moomoo.ACTIVITY_DAYS
+    assert record["searched"]["default"] is True
+    # A window nobody asked for is never silent.
+    assert "no start date given, so the last month" in capsys.readouterr().out
 
 
-def test_the_range_the_text_model_writes_is_the_one_queried(run):
+def test_an_assumed_window_is_offered_back_for_a_follow_up_to_replace(run):
+    record, _, _, _ = run("activity", answers=[{"start": None, "end": None, "missing": None}])
+    assert "last month" in record["assumed"] and "Say another range" in record["assumed"]
+    assert record["searched"]["from"] in record["assumed"]
+
+
+def test_a_named_range_is_not_an_assumption(run, capsys):
     record, opend, _, _ = run("activity", answers=[{"start": "2026-10-01", "end": "2026-10-06", "missing": None}])
-    assert record["searched"] == {"from": "2026-10-01", "to": "2026-10-06"}
+    assert record["searched"] == {"from": "2026-10-01", "to": "2026-10-06", "default": False}
     assert next(k for n, k in opend.calls if n == "fills")["start"] == "2026-10-01"
+    assert "assumed" not in record and "no start date given" not in capsys.readouterr().out
+
+
+def test_a_named_end_anchors_the_missing_start_rather_than_today(run):
+    """Anchored to today, an end in the past would invert the range and read nothing. The span is still code's
+    choice, so it is still announced."""
+    record, _, _, _ = run("activity", answers=[{"start": None, "end": "2026-06-30", "missing": None}])
+    assert record["searched"] == {"from": "2026-05-31", "to": "2026-06-30", "default": True}
+
+
+def test_an_end_filled_in_with_today_is_still_codes_choice_of_window(run, capsys):
+    """The model routinely leaves the start null and fills the end in with today; today is not something the person
+    asked for, so the month-long span is still announced and still overridable."""
+    record, _, _, _ = run("activity", answers=[{"start": None, "end": None, "missing": None}])
+    assert record["searched"]["default"] is True and "assumed" in record
+    assert "no start date given" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -298,12 +325,18 @@ def test_the_range_the_text_model_writes_is_the_one_queried(run):
     [
         ({"start": "last Monday", "end": None, "missing": None}, "not YYYY-MM-DD"),
         ({"start": "2026-10-09", "end": "2026-10-01", "missing": None}, "ends before it starts"),
-        ({"start": None, "end": None, "missing": "which week?"}, "Need more detail"),
     ],
 )
 def test_a_range_that_does_not_check_out_reads_nothing(run, reply, message):
     with pytest.raises(ValueError, match=message):
         run("activity", answers=[reply])
+
+
+def test_a_question_about_the_range_is_answered_by_the_default_rather_than_raised(run, capsys):
+    """The model may still ask for a range. Code has a default and says when it used one, so it answers itself."""
+    record, _, _, _ = run("activity", answers=[{"start": None, "end": None, "missing": "which week?"}])
+    assert record["status"] == "done" and record["searched"]["default"] is True
+    assert "no start date given, so the last month" in capsys.readouterr().out
 
 
 # --- accounts --------------------------------------------------------------------------------------------------

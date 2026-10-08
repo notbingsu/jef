@@ -18,6 +18,8 @@ trace = "low"
 # server_idle_minutes = 10      # exits after this long with nothing to do
 # run_timeout_seconds = 180     # a run stops at its next safe point after this long
 # approval_wait_seconds = 120   # how long to wait for you to click Allow on Chrome's remote-debugging prompt
+# memory_minutes = 5           # how long a question a run stopped on is kept, so the next request
+                              #   can be read as its answer
 
 # Text model for TYPE_TEXT, calendar arguments and reports. A claude-* model uses the Anthropic API.
 text_model = "claude-haiku-4-5"

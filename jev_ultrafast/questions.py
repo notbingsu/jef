@@ -41,6 +41,18 @@ option can reasonably handle the request."""
 SKILL = """Choose the one skill within this use case that best handles the request, assuming this use case is the
 right one; another question decides the use case. Choose only an offered skill."""
 
+
+# Rides in the routing request whenever a run has stopped on a question, so reading the reply as its answer costs no
+# extra round trip.
+FOLLOW_UP = """Is `request` the answer to `asked`, the question a run stopped to ask, rather than a request of its
+own? `earlier_request` is what the person asked just before that question. A short reply that only makes sense as an
+answer to `asked` — a date or a range, a name, one of the options it offered, a correction — is its answer. A request
+that stands on its own is not, even when it is about the same subject."""
+FOLLOW_UP_CRITERIA = {
+    "true": "It answers `asked`: it supplies what the question asked for, or picks one of the choices it offered.",
+    "false": "It stands on its own as a new request, or asks for something `asked` did not ask about.",
+}
+
 CALENDAR = """Return a JSON object with the arguments for one Google Calendar operation, matching the schema exactly.
 Follow `instructions` for this operation. Use null for anything the details do not give.
 Resolve relative dates ("tomorrow", "next Friday") from `now`, in `timezone`.

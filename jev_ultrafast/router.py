@@ -9,8 +9,8 @@ import re
 import time
 
 from . import config, skills
-from .model import typesafe, validate_choice
-from .questions import ROUTE, SKILL
+from .model import typesafe, validate_choice, validate_noul
+from .questions import FOLLOW_UP, FOLLOW_UP_CRITERIA, ROUTE, SKILL
 
 NONE = "NONE"
 
@@ -39,8 +39,12 @@ def catalog(root=None):
     return groups
 
 
-def route(request, root=None):
-    """Returns (leaf path or None for NONE, routing record)."""
+def route(request, root=None, pending=None):
+    """Returns (leaf path or None for NONE, routing record).
+
+    With `pending`, a question a run stopped on, one more head asks whether this request is its answer. It rides
+    in the same request as the routing heads, so it costs no extra round trip, and its probability is the
+    record's `follow_up`. Whether to act on it is the caller's call, not the router's."""
     groups = catalog(root)
     if not groups:
         raise ValueError("There are no skills to choose from; add one under skills/.")
@@ -64,6 +68,16 @@ def route(request, root=None):
                 "criteria": group["skills"],
                 "instructions": {"request": request, "use_case": name, "rules": [ROUTE, SKILL]},
             }
+    if pending:
+        questions["follow_up"] = {
+            "type": "noul",
+            "criteria": FOLLOW_UP_CRITERIA,
+            "instructions": {
+                "question": FOLLOW_UP,
+                "asked": pending["question"],
+                "earlier_request": pending["earlier_request"],
+            },
+        }
     body = {
         "model": config.get("typesafe_model"),
         "state": {"request": request},
@@ -79,6 +93,9 @@ def route(request, root=None):
         "latency_ms": round((time.perf_counter() - started) * 1000),
         "answers": result["answers"],
     }
+    if pending:
+        # Recorded whether or not it wins, so a trace shows what the follow-up head thought either way.
+        record["follow_up"] = round(validate_noul(result["answers"].get("follow_up", {})), 3)
     if name == NONE:
         return None, record
     if name in heads:

@@ -39,6 +39,7 @@ Secrets and settings live apart, because they are handled differently:
 | `server_idle_minutes` | `10` | The server exits after this long with nothing to do, closing its warm tabs. |
 | `run_timeout_seconds` | `180` | A run that is still going stops at its next safe point after this long. |
 | `approval_wait_seconds` | `120` | How long a request waits for you to click Allow on Chrome's "Allow remote debugging?" prompt. |
+| `memory_minutes` | `5` | How long a question a run stopped on is kept, so the next request can be read as its answer. See [Answering a question jev asked](#answering-a-question-jev-asked). |
 | `telegram_allowed` | `[]` | Numeric Telegram ids that may drive jev from a chat (see [Telegram](#telegram)). Empty means nobody. |
 
 For the Calendar API skills, create an OAuth client of type **Desktop app** in Google Cloud (Calendar API enabled) and save its JSON as `config/client_secrets.json`. The first calendar run opens a consent page and saves `config/token.json`. tele_gcal's `client_secrets.json` and `token.json` work as-is (same scope). Both files are git-ignored. The consent page redirects to `http://localhost:8765/`; a Web application client (tele_gcal's is one) must have that redirect URI registered, while a Desktop app client accepts it as is.
@@ -77,6 +78,37 @@ If use case × skill confidence is under 50%, jev asks before running; without a
 | `--trace full\|low\|off` | Record this run at another level than `jev.toml`'s `trace`, e.g. `--trace full` to debug one run. |
 | `--no-server` | Run this request in this process, as before the server existed. Useful when debugging jev itself. |
 | `--stop-server` | Stop the server once its current run ends. The next `jev` starts a fresh one. |
+
+### Answering a question jev asked
+
+A run that needs something only you can say stops and asks — and keeps the question for the next request:
+
+```text
+jev what was my latest trade
+  jev: Need more detail: today only, or a specific date range?
+
+jev within last month
+  continuing moomoo/activity, which asked: today only, or a specific date range?
+    request: what was my latest trade  ·  within last month
+```
+
+The reply is judged by one more head in the same TypeSafe request that routes, so asking costs no extra round trip.
+When it is the answer, the skill that asked runs again with **both halves** of the request — not whatever the reply
+alone would route to, because a fragment routes badly: `within last month` on its own routes at 46%, `today only`
+routes nowhere, and `make it september instead` routes *confidently* to a calendar change. Routing confidence cannot
+be the gate, so a pending question is always compared against, however sure the routing was.
+
+One slot, at most `memory_minutes` old and three answers deep. An answer to an answer compounds, because the slot
+holds the merged request rather than the first one. There is no session and no history: a named skill (`--skill`)
+ignores it, the slot is cleared once a continued run gets through without asking again, and a chain that keeps asking
+is dropped rather than grown. An unrelated request does not yet invalidate it — see [Roadmap](#roadmap).
+
+A run that stops this way now writes a trace with `status: "unanswered"` and the question it asked; it previously
+wrote none, which is why two runs of the same request could differ with nothing on disk to say why.
+
+The same slot carries a choice a run made *for* you. A run that gets through on a default it picked — the window in
+[moomoo activity](#moomoo-holdings) — says so and leaves that choice offered, so the next request can replace it
+instead of starting over. Naming a range clears the offer, because then nothing was assumed.
 
 A browser skill opens a tab in the foreground, so you watch the real page. The terminal prints each action as it executes:
 
@@ -321,8 +353,29 @@ What the code guarantees, whatever the model returns:
   That path allows 10 reads per 30 s per account, and a run reads once.
 - **Holdings are found by code.** `moomoo/position` offers TypeSafe only the rows just read, so no model ever names
   an instrument; under 50% the run stops and names the likeliest two.
-- **Dates are checked.** The text model writes the activity range; code checks the shape and the order, and an open
-  range covers the last week.
+- **Dates are checked, and the window is code's to choose.** The text model writes only the dates the request
+  actually names; code checks their shape and order. A request that names no start reads the **last month**, and says
+  so, because a window nobody asked for must not be a silent assumption:
+
+  ```text
+  moomoo/activity → moomoo.activity
+    account 283726802396538239  2026-09-08 to 2026-10-08
+    (no start date given, so the last month above; say another range to change it)
+  ```
+
+  That offer is live: the next request can replace the window rather than start over, through the same slot as
+  [a question jev asked](#answering-a-question-jev-asked).
+
+  ```text
+  jev actually just since october 1
+    continuing moomoo/activity, which asked: No start date was given, so I read the last month…
+      request: what was my latest trade  ·  actually just since october 1
+    account 283726802396538239  2026-10-01 to 2026-10-08
+  ```
+
+  The model is not asked whether it needs a range, and a question it raises about one is not read: code has a
+  default and announces it, so `what was my latest trade` reads the same window every time. It used to read three
+  different ones.
 
 ### Questions about your portfolio
 
@@ -361,6 +414,17 @@ API operations are plain functions: `jev_ultrafast.gcal.OPERATIONS["create_event
 ## Limits
 
 The DOM reader handles common HTML and ARIA controls. Shadow roots, iframes, canvas, uploads, pop-up tabs, nested scroll containers and complex keyboard widgets can block progress. A browser run stops after 60 actions, 120 decisions, or three actions in a row that don't change the page. Freshness guards may make pages with live-updating content (chat timestamps, typing indicators) re-decide more often.
+
+## Roadmap
+
+- **Invalidate the pending question on an unrelated request.** A question a run stopped on expires after
+  `memory_minutes` and is cleared once it has been answered, but a request that confidently routes somewhere else
+  leaves it in place, so it can still be offered to the request after that. The routing heads already say the
+  request went elsewhere; acting on that is the missing half. See
+  [Answering a question jev asked](#answering-a-question-jev-asked).
+- **Telegram: cosmetic structuring.** A run's lines are coalesced into one monospace block, which keeps jev's columns
+  aligned but assumes a terminal's width. The holdings table is about 90 columns and wraps badly on a phone. Chat
+  output wants its own narrower shape, not the terminal's.
 
 ## Development
 

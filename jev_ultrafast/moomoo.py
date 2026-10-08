@@ -12,13 +12,14 @@ resolves the account, turns the SDK's DataFrames into plain rows at the boundary
 import math
 import re
 import socket
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from time import perf_counter
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import moomoo as sdk  # the OpenAPI SDK, not this module: an absolute import. It brings pandas, paid once per server.
 
 from . import config, console
+from .memory import Unanswered
 from .model import complete_json, conform, nullable, strict, typesafe, validate_choice, validate_noul
 from .questions import (
     HOLDING,
@@ -38,7 +39,9 @@ ENVIRONMENTS = ("REAL", "SIMULATE")
 FIRMS = ("FUTUSECURITIES", "FUTUINC", "FUTUSG", "FUTUAU", "FUTUCA", "FUTUJP", "FUTUMY")
 CURRENCIES = ("HKD", "USD", "CNH", "JPY", "AUD", "CAD", "MYR", "SGD")
 DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
-ACTIVITY_DAYS = 7
+# A request that names no range reads the last month. Code chooses it, and the run says so: a window nobody
+# asked for must never be a silent assumption, and a follow-up can replace it.
+ACTIVITY_DAYS = 30
 ANSWER_LENGTH = 600
 
 RANGE = strict(start=nullable("string"), end=nullable("string"), missing=nullable("string"))
@@ -345,8 +348,12 @@ def judge(skill, details, questions, **state):
     return result["answers"], info
 
 
-def ask(skill, details, where, schema, instructions, **context):
-    """One text-model call for the free text and dates an operation needs."""
+def ask(skill, details, where, schema, instructions, stop_if_missing=True, **context):
+    """One text-model call for the free text and dates an operation needs.
+
+    With `stop_if_missing` false, a question the model raises is ignored: an operation that has a default and says
+    when it used one can answer that question itself, and asking the model not to ask is a prompt fight code wins
+    by not reading the answer."""
     console.check()  # a safe point: before a model call, and nothing here ever changes anything anyway
     now = datetime.now(where["zone"])
     request = {
@@ -362,8 +369,9 @@ def ask(skill, details, where, schema, instructions, **context):
     output, info = complete_json(MOOMOO_ARGUMENTS, request, schema, "moomoo skills")
     if output is None or not conform(output, schema):
         raise ValueError("The text model's arguments did not match the operation; nothing was read.")
-    if output.get("missing"):
-        raise ValueError(f"Need more detail: {output['missing']}")
+    if output.get("missing") and stop_if_missing:
+        # Answerable in words, so it is kept for one follow-up rather than simply failing.
+        raise Unanswered(output["missing"], f"Need more detail: {output['missing']}")
     return output, info
 
 
@@ -491,11 +499,11 @@ def position(skill, details, confirm):
         "judgments": [judged] if judged else [],
     }
     if choice == NONE:
-        raise ValueError("None of your holdings is the one you mean; nothing was shown.")
+        raise Unanswered("None of your holdings is the one you mean; nothing was shown.")
     if probabilities[choice] < SURE:
         likely = [k for k in sorted(probabilities, key=probabilities.get, reverse=True) if k != NONE][:2]
         options = " or ".join(f"{criteria[k]['code']} ({criteria[k]['name']})" for k in likely)
-        raise ValueError(f"Not sure which holding you mean: {options}. Say which one.")
+        raise Unanswered(f"Not sure which holding you mean: {options}. Say which one.")
     held = positions[int(choice) - 1]
     console.say(f"  account {account['acc_id']} ({account['trd_env']}, {account['security_firm']})  match: "
                 f"{probabilities[choice]:.0%}")
@@ -511,19 +519,23 @@ def position(skill, details, confirm):
 
 
 def span(args, zone):
-    """The range to read, as YYYY-MM-DD. The text model writes the dates; code checks their shape and order, and an
-    open range covers the last week."""
+    """The range to read, as (start, end, default?). The text model writes a date only where the details name one;
+    code checks the shape and the order and fills in what is missing. `default?` is whether code chose how far back
+    to look, which is what an unnamed start means: the model routinely fills the end in with today, and today is not
+    something the person asked for. A missing start is anchored to the end rather than to today, so naming only an
+    end cannot invert the range."""
     today = datetime.now(zone).date()
-    bounds = []
-    for key, fallback in (("start", today - timedelta(days=ACTIVITY_DAYS)), ("end", today)):
+    named = {}
+    for key in ("start", "end"):
         value = (args.get(key) or "").strip()
         if value and not DAY.fullmatch(value):
             raise ValueError(f"The text model's {key} date {value!r} is not YYYY-MM-DD; nothing was read.")
-        bounds.append(value or fallback.isoformat())
-    start, end = bounds
-    if start > end:
-        raise ValueError(f"That range ends before it starts ({start} to {end}); nothing was read.")
-    return start, end
+        named[key] = value or None
+    last = date.fromisoformat(named["end"]) if named["end"] else today
+    first = date.fromisoformat(named["start"]) if named["start"] else last - timedelta(days=ACTIVITY_DAYS)
+    if first > last:
+        raise ValueError(f"That range ends before it starts ({first} to {last}); nothing was read.")
+    return first.isoformat(), last.isoformat(), named["start"] is None
 
 
 def deal(row):
@@ -559,10 +571,11 @@ def activity(skill, details, confirm):
         details,
         where,
         RANGE,
-        "Choose the date range of account activity the details ask about. Use null for a bound the details do not "
-        "give; a missing range means the last week.",
+        "Give the date range of account activity the details name. Use null for any bound they do not name. "
+        "Do not ask for a range: when none is named, code reads the last month.",
+        stop_if_missing=False,
     )
-    start, end = span(args, where["zone"])
+    start, end, default = span(args, where["zone"])
     console.check()  # a safe point: the range is set and nothing has been read
     context = connect(where, account["security_firm"])
     try:
@@ -577,12 +590,18 @@ def activity(skill, details, confirm):
     limit = where["max_results"]
     record = {
         "account": {k: account[k] for k in ACCOUNT_KEYS},
-        "searched": {"from": start, "to": end},
+        "searched": {"from": start, "to": end, "default": default},
         "model_calls": [call],
         "fills": fills,
         "orders": orders,
     }
     console.say(f"  account {account['acc_id']}  {start} to {end}")
+    if default:
+        # Said out loud, and offered back: the next request may replace this window instead of starting over.
+        record["assumed"] = (
+            f"No start date was given, so I read the last month, {start} to {end}. Say another range to change it."
+        )
+        console.say("  (no start date given, so the last month above; say another range to change it)")
     console.say(f"\n  {len(fills)} fill(s)" + (f", showing {limit}" if len(fills) > limit else ""))
     for f in fills[:limit]:
         console.say(f"    {f['when'][:16]:<17}{f['side']:<5}{f['code']:<11}{f['quantity']:>8,.0f} @ {f['price']:,.2f}")

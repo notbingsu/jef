@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 
 from . import config, console
+from .memory import Unanswered
 from .model import TRANSIENT, complete_json, conform, nullable, strict, typesafe, validate_choice, validate_noul
 from .questions import (
     ANSWER,
@@ -327,7 +328,8 @@ def ask(skill, details, zone, schema, instructions, **context):
     if output is None or not conform(output, schema):
         raise ValueError("The text model's arguments did not match the operation; nothing changed.")
     if output.get("missing"):
-        raise ValueError(f"Need more detail: {output['missing']}")
+        # Answerable in words, so it is kept for one follow-up rather than simply failing.
+        raise Unanswered(output["missing"], f"Need more detail: {output['missing']}")
     return output, info
 
 
@@ -585,11 +587,11 @@ def pick(skill, details, calendar, zone):
     answer = validate_choice(answers.get("event", {}), criteria)
     choice, probabilities = answer["choice"], answer["probabilities"]
     if choice == NONE:
-        raise ValueError("None of the events found is the one you mean; nothing changed.")
+        raise Unanswered("None of the events found is the one you mean; nothing changed.")
     if probabilities[choice] < SURE:
         likely = [k for k in sorted(probabilities, key=probabilities.get, reverse=True) if k != NONE][:2]
         options = " or ".join(f"“{criteria[k]['event']}”" for k in likely)
-        raise ValueError(f"Not sure which event you mean: {options}. Nothing changed; say which one.")
+        raise Unanswered(f"Not sure which event you mean: {options}. Nothing changed; say which one.")
     return events[int(choice) - 1], probabilities[choice], record
 
 
